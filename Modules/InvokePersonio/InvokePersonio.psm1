@@ -2,7 +2,7 @@
 # Lokale Sitzungen lesen das Personio Client-Secret und Access-Tokens aus dem Windows Credential Manager.
 # In Azure Automation Runbooks wird das Client-Secret aus Get-AutomationPSCredential gelesen und pro Job ein frisches Access-Token nur im Arbeitsspeicher gehalten.
 
-# Version 1.7.0 18.03.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
+# Version 1.9.0 23.03.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
 
 #Requires -Modules @{ ModuleName = 'BetterCredentials'; ModuleVersion = '4.5' }
 
@@ -152,9 +152,9 @@ function Invoke-Personio {
             $body = EscapeNonAscii $body
         }
     }
-   Switch -Regex ($endpoint){
-    '\?' {$uri = $Personio_uri+"?limit=$limit&offset=$offset&"}
-    '\?email' {$uri = $Personio_uri+$endpoint}
+    Switch -Regex ($endpoint){
+     '^\?email=' {$uri = $Personio_uri+$endpoint}
+     '^\?$' {$uri = $Personio_uri+"?limit=$limit&offset=$offset&"}
     "^\d+$" {$uri = $Personio_uri+"/"+$endpoint}
     "/\d+$" {$uri = $Personio_uri+$endpoint} # match if String starts with / followed by Numbers = ID
     Default {$uri = $Personio_uri+$endpoint}
@@ -177,7 +177,6 @@ function Invoke-Personio {
     catch {
         switch -RegEx ($PSItem.Exception.Message) {
         "401"   {
-                    Write-Host "personio_token ist falsch WebRequest-Error: 401"
                     if (-not $env_runbook) {
                         Remove-StoredCredentialSafe -Target $Personio_access_token_1
                         Remove-StoredCredentialSafe -Target $Personio_access_token_2
@@ -189,8 +188,8 @@ function Invoke-Personio {
                         $Error.clear()
                         $script:Error_401 = $true
                         $null = Get-Creds -renew $true
-                        $responseObject = Invoke-Personio -endpoint $endpoint -method $method -body $body -limit $limit -offset $offset -RawOutput:$RawOutput
-                        $response = $Null
+                        Write-Host "Access-Token wurde erneuert" -ForegroundColor "Yellow"
+                        return Invoke-Personio -endpoint $endpoint -method $method -body $body -limit $limit -offset $offset -RawOutput:$RawOutput
                     }
                 }
         "404"   {
@@ -914,6 +913,13 @@ function Get-Creds {
         $clientCredential = Get-PersonioClientCredential
         $token = Request-PersonioAccessToken -Credential $clientCredential
         return @(New-PersonioTokenCredentialObjects -Token $token)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($script:Personio_client_id)) {
+        $storedClientCredential = Get-StoredCredentialSafe -Target $servicePERUserName
+        if ($storedClientCredential) {
+            $script:Personio_client_id = $storedClientCredential.UserName
+        }
     }
 
     $credential = @()
