@@ -1,4 +1,4 @@
-﻿# Invoke-Inventory V1.9.6 18.03.2026 by Klaus Kupferschmid
+﻿# Invoke-Inventory V1.9.7 17.06.2026 by Klaus Kupferschmid
 # Lokale Sitzungen lesen das API-Token aus dem Windows Credential Manager.
 # In Azure Automation Runbooks wird das API-Token ueber Get-AutomationPSCredential gelesen; es gibt dort keinen lokalen Fallback.
 
@@ -184,12 +184,23 @@ function Invoke-Inventory {
             $stat = Invoke-RestMethod -Uri ($uri+$endpoint) -Headers $headers -ContentType $contentType -Method $method
         }
         catch {
-            if ($error[0].Exception.Response.StatusCode -eq "429"){
+            $caughtError = $_
+            if ($caughtError.Exception.Response.StatusCode -eq "429"){
             Write-Host "Inventory hat derzeit zuviele Anfragen ... warte 5 Sec und versuche es ein 2. mal" -ForegroundColor "Yellow"
             start-sleep -Seconds 5
             $stat = Invoke-RestMethod -Uri ($uri+$endpoint) -Headers $headers -ContentType $contentType -Method $method
             }
-            if ($error[0].Exception.Response.StatusCode -eq "429"){
+            elseif (Test-InventoryAuthError -ErrorRecord $caughtError){
+                Write-Host "Inventory360 API-Token ist ungültig oder abgelaufen (HTTP 401/403)." -ForegroundColor Yellow
+                $token = Reset-InventoryToken
+                if ($token){
+                    $headers = @{'Authorization' = $token;"Accept" = $contentType}
+                    $stat = Invoke-RestMethod -Uri ($uri+$endpoint) -Headers $headers -ContentType $contentType -Method $method
+                } else {
+                    throw "Inventory360 API-Token ist ungültig und konnte nicht erneuert werden."
+                }
+            }
+            if ($caughtError.Exception.Response.StatusCode -eq "429"){
                 throw "HTTP 429: The request limit of a user backend has been exceeded. Please try again later."
             }
         }
@@ -201,7 +212,27 @@ function Invoke-Inventory {
             $stat = Invoke-RestMethod -Uri ($uri+$endpoint) -Headers $headers -ContentType $contentType -Method $method -Body $bodyJson -ErrorVariable RestError -ErrorAction SilentlyContinue 
         }
         catch {
-            if ($restError.Errorrecord.ErrorDetails.Message){
+            $caughtError = $_
+            if (Test-InventoryAuthError -ErrorRecord $caughtError){
+                Write-Host "Inventory360 API-Token ist ungültig oder abgelaufen (HTTP 401/403)." -ForegroundColor Yellow
+                $token = Reset-InventoryToken
+                if ($token){
+                    $headers = @{'Authorization' = $token;"Accept" = $contentType}
+                    $error.clear()
+                    try {
+                        $stat = Invoke-RestMethod -Uri ($uri+$endpoint) -Headers $headers -ContentType $contentType -Method $method -Body $bodyJson -ErrorVariable RestError -ErrorAction SilentlyContinue
+                    }
+                    catch {
+                        if ($restError.Errorrecord.ErrorDetails.Message){
+                            Write-Host "Verbindung zu Inventory war nicht erfolgreich!" -ForegroundColor Red
+                            Write-Host "Inventory-Rückmeldung:"($restError.Errorrecord.ErrorDetails.Message.split('"')[7]) -ForegroundColor Red
+                        }
+                    }
+                } else {
+                    Write-Host "Inventory360 API-Token ist ungültig und konnte nicht erneuert werden." -ForegroundColor Red
+                }
+            }
+            elseif ($restError.Errorrecord.ErrorDetails.Message){
                 Write-Host "Verbindung zu Inventory war nicht erfolgreich!" -ForegroundColor Red
                 Write-Host "Inventory-Rückmeldung:"($restError.Errorrecord.ErrorDetails.Message.split('"')[7]) -ForegroundColor Red
             }
@@ -1321,9 +1352,17 @@ function Get-StoredCredentialSafe {
 }
 function Set-InventoryTokenToCredentialManager {
     # Dieses Verhalten ist nur fuer lokale Sitzungen gedacht.
-    $storedCredential = Get-StoredCredentialSafe -Target $Inventory_token_target
-    if ($storedCredential) {
-        return $storedCredential
+    # -Force erzwingt eine erneute Abfrage, auch wenn bereits ein (ggf. ungueltiges)
+    # Token im Windows Credential Manager gespeichert ist.
+    param (
+        [switch] $Force
+    )
+
+    if (-not $Force) {
+        $storedCredential = Get-StoredCredentialSafe -Target $Inventory_token_target
+        if ($storedCredential) {
+            return $storedCredential
+        }
     }
 
     Write-Host "Inventory360 API-Token wird benötigt" -ForegroundColor Yellow
@@ -1331,6 +1370,49 @@ function Set-InventoryTokenToCredentialManager {
     Set-Credential -Target $Inventory_token_target -Credential $credential -Type Generic -Persistence Enterprise -Description "Inventory360 API-Token" >$null
 
     return Get-StoredCredentialSafe -Target $Inventory_token_target
+}
+function Test-InventoryAuthError {
+    # Prueft, ob ein Fehler durch ein ungueltiges/falsches Token verursacht wurde
+    # (HTTP 401 Unauthorized oder HTTP 403 Forbidden).
+    param (
+        [Parameter(Mandatory=$false)]
+        $ErrorRecord
+    )
+
+    if ($null -eq $ErrorRecord) {
+        return $false
+    }
+
+    $statusCode = $null
+    try {
+        $response = $ErrorRecord.Exception.Response
+        if ($response -and ($null -ne $response.StatusCode)) {
+            $statusCode = [int]$response.StatusCode
+        }
+    }
+    catch {
+        $statusCode = $null
+    }
+
+    return ($statusCode -eq 401 -or $statusCode -eq 403)
+}
+function Reset-InventoryToken {
+    # Entfernt das vermutlich ungueltige Token und fragt es interaktiv neu ab,
+    # um es anschliessend wieder im Windows Credential Manager zu speichern.
+    # In Runbooks ist keine interaktive Abfrage moeglich -> $null.
+    Initialize-AutomationEnvironment
+
+    if ($env_runbook) {
+        Write-Host "Inventory360 API-Token kann in einem Runbook nicht interaktiv erneuert werden" -ForegroundColor Red
+        return $null
+    }
+
+    $credential = Set-InventoryTokenToCredentialManager -Force
+    if (!$credential) {
+        return $null
+    }
+
+    return Convert-SecureStringToPlainText -SecureString $credential.Password
 }
 function Get-InventoryToken {
     Initialize-AutomationEnvironment

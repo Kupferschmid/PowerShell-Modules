@@ -12,7 +12,7 @@
 RootModule = 'InvokeInventory360'
 
 # Version number of this module.
-ModuleVersion = '1.9.6'
+ModuleVersion = '1.9.7'
 
 # Supported PSEditions
 # CompatiblePSEditions = @()
@@ -117,7 +117,7 @@ PrivateData = @{
         # IconUri = ''
 
         # ReleaseNotes of this module
-        ReleaseNotes = 'Added configurable module settings, removed Pause from public exports, aligned manifest exports, and added smoke tests.'
+        ReleaseNotes = 'Detect invalid or expired API tokens (HTTP 401/403), re-prompt for the token, store it again in the Windows Credential Manager, and retry the request automatically.'
 
         # External dependent modules of this module
         # ExternalModuleDependencies = ''

@@ -2,7 +2,7 @@
 # Lokale Sitzungen lesen das Personio Client-Secret und Access-Tokens aus dem Windows Credential Manager.
 # In Azure Automation Runbooks wird das Client-Secret aus Get-AutomationPSCredential gelesen und pro Job ein frisches Access-Token nur im Arbeitsspeicher gehalten.
 
-# Version 1.9.0 23.03.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
+# Version 1.9.1 09.06.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
 
 #Requires -Modules @{ ModuleName = 'BetterCredentials'; ModuleVersion = '4.5' }
 
@@ -178,8 +178,7 @@ function Invoke-Personio {
         switch -RegEx ($PSItem.Exception.Message) {
         "401"   {
                     if (-not $env_runbook) {
-                        Remove-StoredCredentialSafe -Target $Personio_access_token_1
-                        Remove-StoredCredentialSafe -Target $Personio_access_token_2
+                        Remove-PersonioAccessTokensSafe
                     }
                     If ($Error_401){
                         $script:Error_401 = $null
@@ -215,8 +214,7 @@ function Invoke-Personio {
         }
         if (-not $env_runbook) {
             # API Token might be longer than 200 characters, so it is stored in two local credential entries.
-            Remove-StoredCredentialSafe -Target $Personio_access_token_1
-            Remove-StoredCredentialSafe -Target $Personio_access_token_2
+            Remove-PersonioAccessTokensSafe
             Set-Credential -Target $Personio_access_token_1 -Credential (New-Object System.Management.Automation.PSCredential('BearerToken', (ConvertTo-SecureString -String $token1 -AsPlainText -Force))) -Type Generic -Description "Personio AccessToken 1" -Persistence Enterprise >$Null
             if ($token2) {
                 Set-Credential -Target $Personio_access_token_2 -Credential (New-Object System.Management.Automation.PSCredential('BearerToken', (ConvertTo-SecureString -String $token2 -AsPlainText -Force))) -Type Generic -Description "Personio AccessToken 2" -Persistence Enterprise >$null
@@ -677,10 +675,26 @@ function Get-StoredCredentialSafe {
         [string] $Target
     )
 
+    $globalErrorCountBefore = $global:Error.Count
+
     try {
-        return Find-Credential -Filter $Target | Select-Object -First 1
+        return Find-Credential -Filter $Target -ErrorAction Stop | Select-Object -First 1
     }
     catch {
+        $message = $PSItem.Exception.Message
+        $isExpectedNotFound = (
+            $message -match 'Element.*(not found|nicht gefunden)' -or
+            $message -match '(Credential|Element).*(not found|nicht gefunden)'
+        )
+
+        if ($isExpectedNotFound) {
+            while ($global:Error.Count -gt $globalErrorCountBefore) {
+                $global:Error.RemoveAt(0)
+            }
+            return $null
+        }
+
+        Write-Warning "Unerwarteter Fehler bei Find-Credential fuer Target '$Target': $message"
         return $null
     }
 }
@@ -690,10 +704,32 @@ function Remove-StoredCredentialSafe {
         [string] $Target
     )
 
+    $errorCountBefore = $Error.Count
+    $storedCredential = Get-StoredCredentialSafe -Target $Target
+    if (-not $storedCredential) {
+        return $false
+    }
+
     try {
         Remove-Credential -Target $Target -Type Generic -ErrorAction Stop
+        return $true
     }
     catch {
+        # Cleanup failures are non-critical and should not pollute the global error stack.
+        while ($Error.Count -gt $errorCountBefore) {
+            $Error.RemoveAt(0)
+        }
+        return $false
+    }
+}
+function Remove-PersonioAccessTokensSafe {
+    $errorCountBefore = $Error.Count
+
+    $null = Remove-StoredCredentialSafe -Target $Personio_access_token_1
+    $null = Remove-StoredCredentialSafe -Target $Personio_access_token_2
+
+    while ($Error.Count -gt $errorCountBefore) {
+        $Error.RemoveAt(0)
     }
 }
 function New-PersonioTokenCredentialObjects {

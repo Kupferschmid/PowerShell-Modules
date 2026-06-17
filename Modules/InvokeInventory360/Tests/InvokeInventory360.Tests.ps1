@@ -6,7 +6,7 @@ Describe 'InvokeInventory360 module smoke tests' {
         $manifest = Test-ModuleManifest $manifestPath
 
         $manifest.Name | Should Be 'InvokeInventory360'
-        $manifest.Version.ToString() | Should Be '1.9.6'
+        $manifest.Version.ToString() | Should Be '1.9.7'
     }
 
     It 'imports the module and exposes the expected public commands' {

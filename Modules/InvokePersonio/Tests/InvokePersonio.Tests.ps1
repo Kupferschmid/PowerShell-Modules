@@ -6,7 +6,7 @@ Describe 'InvokePersonio module smoke tests' {
         $manifest = Test-ModuleManifest $manifestPath
 
         $manifest.Name | Should Be 'InvokePersonio'
-        $manifest.Version.ToString() | Should Be '1.9.0'
+        $manifest.Version.ToString() | Should Be '1.9.1'
     }
 
     It 'imports the module and exposes the expected public commands' {
