@@ -2,7 +2,7 @@
 # Lokale Sitzungen lesen das Bearer-Token für die hhpberlin-ZEP-Instanz aus dem Windows Credential Manager.
 # In Azure Automation Runbooks wird das Token aus Get-AutomationPSCredential gelesen.
 
-# Version 0.3.1 07.10.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
+# Version 0.4.0 23.10.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
 
 #Requires -Modules @{ ModuleName = 'BetterCredentials'; ModuleVersion = '4.5' }
 
@@ -1572,8 +1572,8 @@ function ConvertTo-ZEPTypedOffer {
 Gets the newest ZEP offers without downloading all offers.
 
 .DESCRIPTION
-The ZEP offers list ignores sorting and filter parameters and is always sorted by ascending id.
-This function therefore reads the list backwards from the last page until it reaches -AfterId
+The ZEP offers list cannot be filtered and is sorted by ascending id by default.
+This function reads the list backwards from the last page until it reaches -AfterId
 (or has collected -Last offers). Typically 1-3 API calls instead of a full download.
 Results are typed via ConvertTo-ZEPTypedOffer (use -Raw for the unchanged API objects)
 and returned in ascending id order.
@@ -1668,6 +1668,97 @@ function Get-ZEPRecentOffers {
     }
 
     foreach ($id in $ids) {
+        if ($Raw.IsPresent) {
+            ConvertTo-ZEPObject -InputObject $collected[$id]
+        }
+        else {
+            ConvertTo-ZEPTypedOffer -Offer $collected[$id]
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+Gets all ZEP offers with the given status ids without downloading all offers.
+
+.DESCRIPTION
+The ZEP offers list cannot be filtered by status, but since 23.10.2026 it can be sorted
+(orderBy=status&order=asc). This function reads the sorted list page by page and stops as soon as
+a status above the highest requested status id appears. Typically a few API calls instead of a
+full download.
+
+If the API ignores the sort order again, the result would be silently incomplete. The function
+therefore checks that the status ids within each page are ascending and throws otherwise.
+It also throws when -MaxPages is reached. Results are typed via ConvertTo-ZEPTypedOffer
+(use -Raw for the unchanged API objects) and returned in ascending id order.
+
+.PARAMETER StatusId
+ZEP status ids (status.id) to return, e.g. 10 (neu), 20 (in Arbeit), 30 (fertig).
+
+.PARAMETER AfterId
+Returns only offers with an id greater than this value (e.g. to exclude legacy offers).
+
+.PARAMETER MaxPages
+Safety limit for pages read per call; the function throws when it is reached.
+
+.EXAMPLE
+Get-ZEPOffersByStatus -StatusId 10, 20
+
+.EXAMPLE
+# Offene Angebote ohne Altbestand
+Get-ZEPOffersByStatus -StatusId 10, 20, 30 -AfterId 18377 | Select-Object id, title, @{ n = 'status'; e = { $_.status.id } }
+#>
+function Get-ZEPOffersByStatus {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][int[]]$StatusId,
+        [Parameter(Mandatory = $false)][int]$AfterId = 0,
+        [Parameter(Mandatory = $false)][ValidateRange(1, 200)][int]$PageSize = 200,
+        [Parameter(Mandatory = $false)][ValidateRange(1, 1000)][int]$MaxPages = 50,
+        [Parameter(Mandatory = $false)][switch]$Raw
+    )
+
+    $maxStatusId = ($StatusId | Measure-Object -Maximum).Maximum
+    $collected = @{}
+    $page = 1
+
+    while ($true) {
+        if ($page -gt $MaxPages) {
+            throw "Get-ZEPOffersByStatus: MaxPages ($MaxPages) erreicht, Ergebnis waere unvollstaendig."
+        }
+
+        $response = Invoke-ZEPRest -Path 'offers' -Query @{ limit = $PageSize; page = $page; orderBy = 'status'; order = 'asc' }
+        $pageItems = @(Get-ZEPResponseItems -Payload $response)
+        if ($pageItems.Count -eq 0) {
+            break
+        }
+
+        # Only within a page: across pages, status changes between two calls may shift the list.
+        $previousStatusId = [int]::MinValue
+        foreach ($item in $pageItems) {
+            $itemStatusId = [int]$item.status.id
+            if ($itemStatusId -lt $previousStatusId) {
+                throw "Get-ZEPOffersByStatus: ZEP liefert die Angebote nicht nach Status sortiert (Seite $page, Angebot $($item.id): Status $itemStatusId nach $previousStatusId). orderBy=status wird offenbar wieder ignoriert."
+            }
+            $previousStatusId = $itemStatusId
+
+            if ($StatusId -contains $itemStatusId -and [int]$item.id -gt $AfterId) {
+                $collected[[int]$item.id] = $item
+            }
+        }
+
+        if ($previousStatusId -gt $maxStatusId) {
+            break
+        }
+        if ($response.meta -and $response.meta.last_page -and $page -ge [int]$response.meta.last_page) {
+            break
+        }
+        $page++
+    }
+
+    Write-Verbose "Get-ZEPOffersByStatus: $($collected.Count) Angebote mit Status $($StatusId -join ', '), $page Seite(n) gelesen."
+
+    foreach ($id in ($collected.Keys | Sort-Object)) {
         if ($Raw.IsPresent) {
             ConvertTo-ZEPObject -InputObject $collected[$id]
         }
@@ -1800,5 +1891,6 @@ Export-ModuleMember Search-ZEPOffers
 Export-ModuleMember ConvertFrom-ZEPDateTime
 Export-ModuleMember ConvertTo-ZEPTypedOffer
 Export-ModuleMember Get-ZEPRecentOffers
+Export-ModuleMember Get-ZEPOffersByStatus
 Export-ModuleMember Get-ZEPOffersById
 Export-ModuleMember Get-ZEPEmployee

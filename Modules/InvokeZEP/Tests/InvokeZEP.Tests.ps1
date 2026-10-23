@@ -6,7 +6,7 @@ if (-not $config -or [string]::IsNullOrWhiteSpace($config.BaseUri)) {
     throw 'Get-ZEPConfiguration returned an invalid configuration object.'
 }
 
-$commands = @('Get-ZEPConfiguration', 'Set-ZEPConfiguration', 'Invoke-ZEPRest', 'Get-ZEPOffer', 'Get-ZEPOffers', 'Get-ZEPOfferItems', 'Search-ZEPOffers', 'ConvertFrom-ZEPDateTime', 'ConvertTo-ZEPTypedOffer', 'Get-ZEPRecentOffers', 'Get-ZEPOffersById', 'Get-ZEPEmployee')
+$commands = @('Get-ZEPConfiguration', 'Set-ZEPConfiguration', 'Invoke-ZEPRest', 'Get-ZEPOffer', 'Get-ZEPOffers', 'Get-ZEPOfferItems', 'Search-ZEPOffers', 'ConvertFrom-ZEPDateTime', 'ConvertTo-ZEPTypedOffer', 'Get-ZEPRecentOffers', 'Get-ZEPOffersByStatus', 'Get-ZEPOffersById', 'Get-ZEPEmployee')
 foreach ($commandName in $commands) {
     if (-not (Get-Command -Name $commandName -ErrorAction SilentlyContinue)) {
         throw "Command '$commandName' was not exported from the module."
@@ -60,7 +60,7 @@ finally {
 }
 
 $manifest = Test-ModuleManifest -Path (Join-Path $PSScriptRoot '..\InvokeZEP.psd1')
-if ($manifest.Version.ToString() -ne '0.3.1') {
+if ($manifest.Version.ToString() -ne '0.4.0') {
     throw "Unexpected module version $($manifest.Version)."
 }
 
@@ -114,6 +114,9 @@ $zepModule = Get-Module InvokeZEP
         param ([string]$Path, [string]$Method = 'GET', [hashtable]$Query, $Body, [int]$RetryCount, [double]$ThrottleDelaySeconds)
         $script:MockCalls.Add([pscustomobject]@{ Path = $Path; Query = $Query })
         $offers = $script:MockOffers
+        if ($Query.orderBy -eq 'status' -and $script:MockHonorsSort) {
+            $offers = @($offers | Sort-Object { $_.status.id }, { $_.id })
+        }
         if ($Query.ContainsKey('id[]')) {
             $wanted = @($Query['id[]'] | ForEach-Object { [int]$_ })
             $offers = @($offers | Where-Object { $wanted -contains $_.id })
@@ -159,6 +162,36 @@ if ((@($idCall.Query['id[]']) -join ',') -ne '1100,1001,99999') {
 $manyIds = @(Get-ZEPOffersById -Id (1001..1250))
 if ($manyIds.Count -ne 250 -or @(& $zepModule { $script:MockCalls } | Where-Object { $_.Query.ContainsKey('id[]') }).Count -ne 4) {
     throw 'Get-ZEPOffersById teilt grosse ID-Listen nicht in Bloecke zu 100.'
+}
+
+# --- Get-ZEPOffersByStatus: 1001-1250 with mixed status, sorted by status via orderBy
+& $zepModule {
+    $script:MockCalls.Clear()
+    $statusCycle = @(10, 20, 30, 60, 200)
+    foreach ($offer in $script:MockOffers) {
+        $statusValue = $statusCycle[($offer.id - 1001) % 5]
+        $offer.status = [pscustomobject]@{ id = $statusValue; name = "s$statusValue" }
+    }
+    $script:MockHonorsSort = $true
+}
+
+$byStatus = @(Get-ZEPOffersByStatus -StatusId 10, 20 -AfterId 1200 -PageSize 50)
+$expectedIds = @(1201..1250 | Where-Object { @(0, 1) -contains (($_ - 1001) % 5) })
+if (($byStatus.id -join ',') -ne ($expectedIds -join ',') -or $byStatus[0].status.id -isnot [int]) {
+    throw "Get-ZEPOffersByStatus lieferte: $($byStatus.id -join ',')"
+}
+# 50 offers per status: page 1 = status 10, page 2 = status 20, page 3 = status 30 -> stop
+$statusPages = @(& $zepModule { $script:MockCalls } | ForEach-Object { $_.Query.page })
+if (($statusPages -join ',') -ne '1,2,3') {
+    throw "Get-ZEPOffersByStatus hat falsche Seiten gelesen: $($statusPages -join ',')"
+}
+
+& $zepModule { $script:MockHonorsSort = $false }
+$unsortedFailed = $false
+try { $null = Get-ZEPOffersByStatus -StatusId 10, 20 -PageSize 50 }
+catch { $unsortedFailed = $_.Exception.Message -match 'nicht nach Status sortiert' }
+if (-not $unsortedFailed) {
+    throw 'Get-ZEPOffersByStatus bricht bei unsortierter Liste nicht ab.'
 }
 
 Remove-Module InvokeZEP -Force

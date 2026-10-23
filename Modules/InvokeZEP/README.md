@@ -54,6 +54,7 @@ Set-ZEPConfiguration -BaseUri 'https://www.zep-online.de/zepxxxx/next/api/v1' -D
 | `Test-ZEPOffersCacheNeedsRefresh` | Prüft, ob der lokale Angebots-Cache aktualisiert werden muss                                                                     |
 | `Search-ZEPOffers`                | Durchsucht Angebote per Property und Teilstring (`-SkipPropertyValidation` für maximale Geschwindigkeit bei bekannten Feldern) |
 | `Get-ZEPRecentOffers`             | Liest nur die neuesten Angebote (rückwärts ab der letzten Seite, `-AfterId` oder `-Last`) – kein Komplett-Download |
+| `Get-ZEPOffersByStatus`           | Liest alle Angebote bestimmter Status (`orderBy=status`, Abbruch nach dem höchsten Status; Fehler, wenn ZEP nicht sortiert) |
 | `Get-ZEPOffersById`               | Liest mehrere Angebote per ID in einem Aufruf (`id[]`-Filter, bis 100 IDs je Aufruf) |
 | `ConvertTo-ZEPTypedOffer`         | Wandelt ein Angebot in verlässliche Typen um (int-IDs, String-Kundennummern, UTC-Zeiten, Datumswerte) |
 | `ConvertFrom-ZEPDateTime`         | Korrigiert ZEP-Zeitstempel (Berliner Ortszeit mit falschem `Z`) nach echtem UTC |
@@ -97,11 +98,17 @@ Das Modul unterstützt zwei Umgebungen:
 
 ## Neue Angebote ohne Komplett-Download
 
-Die ZEP-API ignoriert für `/offers` alle Sortier- und Filterparameter (`orderBy`, `order`, `status`, `modified_after`, …);
-die Liste ist immer aufsteigend nach `id` sortiert. `Get-ZEPRecentOffers` liest daher von der letzten Seite rückwärts:
+Die ZEP-API kann `/offers` nicht filtern (`status`, `modified_after`, … werden ignoriert), aber seit 23.10.2026
+sortieren (`orderBy`, `order`). Ohne Sortierung ist die Liste aufsteigend nach `id`.
 
 ```powershell
-# Alle Angebote mit höherer ID als das Wasserzeichen
+# Alle Angebote mit Status neu/in Arbeit (liest nur die ersten Seiten der nach Status sortierten Liste)
+Get-ZEPOffersByStatus -StatusId 10, 20
+
+# Dasselbe ohne Altbestand bis ID 18377
+Get-ZEPOffersByStatus -StatusId 10, 20 -AfterId 18377
+
+# Alle Angebote mit höherer ID als 18377 (rückwärts ab der letzten Seite)
 Get-ZEPRecentOffers -AfterId 18377
 
 # Die neuesten 20 Angebote
@@ -115,7 +122,7 @@ Get-ZEPOffersById -Id 18368, 18380
 
 ZEP liefert **Berliner Ortszeit, markiert sie aber mit `Z` als UTC** (z. B. `2026-10-07T01:24:35Z` = 23:24:35 UTC).
 PowerShell 7 macht daraus ein falsches UTC-Datum, Windows PowerShell 5.1 einen String.
-`Get-ZEPRecentOffers` und `Get-ZEPOffersById` liefern deshalb typisierte Angebote mit korrigierten Werten
+`Get-ZEPRecentOffers`, `Get-ZEPOffersByStatus` und `Get-ZEPOffersById` liefern deshalb typisierte Angebote mit korrigierten Werten
 (`status_since` als UTC-`[datetime]`, `valid_until` u. a. als Datum). Für andere Funktionen:
 
 ```powershell

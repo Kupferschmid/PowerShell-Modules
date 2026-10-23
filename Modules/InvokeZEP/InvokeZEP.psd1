@@ -1,6 +1,6 @@
 @{
     RootModule = 'InvokeZEP.psm1'
-    ModuleVersion = '0.3.1'
+    ModuleVersion = '0.4.0'
     GUID = '4abf4e3d-44de-4e0a-b4da-6e4a9f8f33c6'
     Author = 'Klaus Kupferschmid'
     CompanyName = 'tempero.it GmbH & hhpberlin GmbH'
@@ -19,6 +19,7 @@
         'ConvertFrom-ZEPDateTime',
         'ConvertTo-ZEPTypedOffer',
         'Get-ZEPRecentOffers',
+        'Get-ZEPOffersByStatus',
         'Get-ZEPOffersById',
         'Get-ZEPEmployee'
     )
@@ -31,6 +32,8 @@
             LicenseUri = 'https://github.com/Kupferschmid/PowerShell-Modules/blob/main/LICENSE'
             ProjectUri = 'https://github.com/Kupferschmid/PowerShell-Modules'
             ReleaseNotes = @'
+0.4.0
+- New Get-ZEPOffersByStatus: reads all offers with the given status ids via orderBy=status (supported by ZEP since 23.10.2026) and stops after the highest requested status. Throws if the API returns an unsorted list.
 0.3.1
 - Examples and tests use placeholder names and IDs.
 0.3.0
