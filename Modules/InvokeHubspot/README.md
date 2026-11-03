@@ -83,7 +83,7 @@ Add-HubspotPropertyOption -Name 'zep_status' -Value '300' -Label 'Neuer Status' 
 Add-HubspotPropertyOption -Name 'zep_status' -Value '30' -Label 'fertig' -UpdateLabel   # rename an existing option
 ```
 
-## Owners and companies
+## Owners, companies and contacts
 
 ```powershell
 Get-HubspotOwner -Email 'max.mustermann@contoso.com'          # cached per session
@@ -91,7 +91,11 @@ Get-HubspotCompany -Id '10000000001'                         # $null if the comp
 Get-HubspotDealCompanies -DealId '12345678903'                # CompanyId, IsPrimary, Labels
 Set-HubspotDealPrimaryCompany -DealId '12345678903' -CompanyId '10000000001' -RemovePreviousPrimary
 Remove-HubspotDealCompany -DealId '12345678903' -CompanyId '10000000001'      # removes all associations to that company
-New-HubspotDeal -Properties @{ dealname = 'Neu' } -PrimaryCompanyId '10000000001'
+Get-HubspotContact -Email 'max.mustermann@contoso.com'        # $null if no contact has this email, cached per session
+Get-HubspotDealContacts -DealId '12345678903'                 # contact ids
+Add-HubspotDealContact -DealId '12345678903' -ContactId '10000000003'
+Remove-HubspotDealContact -DealId '12345678903' -ContactId '10000000003'
+New-HubspotDeal -Properties @{ dealname = 'Neu' } -PrimaryCompanyId '10000000001' -ContactId '10000000003'
 ```
 
 ## Configuration

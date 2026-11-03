@@ -2,7 +2,7 @@
 # Lokale Sitzungen lesen das Bearer-Token für die hhpberlin-ZEP-Instanz aus dem Windows Credential Manager.
 # In Azure Automation Runbooks wird das Token aus Get-AutomationPSCredential gelesen.
 
-# Version 0.4.0 23.10.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
+# Version 0.5.0 03.11.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
 
 #Requires -Modules @{ ModuleName = 'BetterCredentials'; ModuleVersion = '4.5' }
 
@@ -1880,6 +1880,60 @@ function Get-ZEPEmployee {
     }
 }
 
+<#
+.SYNOPSIS
+Gets a contact person of a ZEP customer.
+
+.DESCRIPTION
+Reads one customer contact (e.g. the customer_contact_id of an offer) including the email address.
+Results are cached per session; use -Refresh to bypass the cache. Returns $null when the
+customer or contact does not exist.
+
+.EXAMPLE
+Get-ZEPCustomerContact -CustomerId '10000000001' -ContactId '12345'
+
+.EXAMPLE
+# Ansprechpartner eines Angebots
+$offer = Get-ZEPOffersById -Id 18380
+(Get-ZEPCustomerContact -CustomerId $offer.customer_id -ContactId $offer.customer_contact_id).email
+#>
+function Get-ZEPCustomerContact {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][string]$CustomerId,
+        [Parameter(Mandatory = $true)][string]$ContactId,
+        [Parameter(Mandatory = $false)][switch]$Refresh
+    )
+
+    if (-not $script:ZEPCustomerContactCache) {
+        $script:ZEPCustomerContactCache = @{}
+    }
+
+    $key = "$($CustomerId.Trim())/$($ContactId.Trim())"
+    if (-not $Refresh.IsPresent -and $script:ZEPCustomerContactCache.ContainsKey($key)) {
+        return $script:ZEPCustomerContactCache[$key]
+    }
+
+    $contact = $null
+    try {
+        $response = Invoke-ZEPRest -Path "customers/$([uri]::EscapeDataString($CustomerId.Trim()))/contacts/$([uri]::EscapeDataString($ContactId.Trim()))"
+        $contact = ConvertTo-ZEPObject -InputObject (@(Get-ZEPResponseItems -Payload $response) | Select-Object -First 1)
+    }
+    catch {
+        $statusCode = $null
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+
+        if ($statusCode -ne 404) {
+            throw
+        }
+    }
+
+    $script:ZEPCustomerContactCache[$key] = $contact
+    return $contact
+}
+
 Export-ModuleMember Get-ZEPConfiguration
 Export-ModuleMember Set-ZEPConfiguration
 Export-ModuleMember Invoke-ZEPRest
@@ -1894,3 +1948,4 @@ Export-ModuleMember Get-ZEPRecentOffers
 Export-ModuleMember Get-ZEPOffersByStatus
 Export-ModuleMember Get-ZEPOffersById
 Export-ModuleMember Get-ZEPEmployee
+Export-ModuleMember Get-ZEPCustomerContact

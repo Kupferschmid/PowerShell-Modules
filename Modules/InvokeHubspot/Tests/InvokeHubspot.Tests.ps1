@@ -6,7 +6,7 @@ Describe 'InvokeHubspot module smoke tests' {
         $manifest = Test-ModuleManifest $manifestPath
 
         $manifest.Name | Should Be 'InvokeHubspot'
-        $manifest.Version.ToString() | Should Be '0.4.3'
+        $manifest.Version.ToString() | Should Be '0.5.0'
     }
 
     It 'imports the module and exposes the expected public commands' {
@@ -34,6 +34,10 @@ Describe 'InvokeHubspot module smoke tests' {
         ($commandNames -contains 'New-HubspotProperty') | Should Be $true
         ($commandNames -contains 'Add-HubspotPropertyOption') | Should Be $true
         ($commandNames -contains 'Remove-HubspotDealCompany') | Should Be $true
+        ($commandNames -contains 'Get-HubspotContact') | Should Be $true
+        ($commandNames -contains 'Get-HubspotDealContacts') | Should Be $true
+        ($commandNames -contains 'Add-HubspotDealContact') | Should Be $true
+        ($commandNames -contains 'Remove-HubspotDealContact') | Should Be $true
     }
 
     It 'updates configuration in-memory' {
@@ -624,6 +628,71 @@ Describe 'InvokeHubspot module smoke tests' {
             $put.ResourcePath | Should Be 'crm/objects/2026-09/deals/42/associations/companies/222'
             (@($put.Body) | ForEach-Object { $_.associationTypeId }) -join ',' | Should Be '5,341'
             ($script:Calls | Where-Object Method -eq 'DELETE').ResourcePath | Should Be 'crm/objects/2026-09/deals/42/associations/companies/111'
+        }
+    }
+
+    It 'finds contacts by email with session cache and manages deal contacts' {
+        Remove-Module InvokeHubspot -ErrorAction SilentlyContinue
+        Import-Module $manifestPath -Force -ErrorAction Stop
+
+        InModuleScope InvokeHubspot {
+            $script:Calls = @()
+            function Invoke-HubspotRequest {
+                param ([string]$ResourcePath, [string]$Method = 'GET', [hashtable]$Query, $Body, [string]$AccessToken, [int]$RetryCount, [double]$ThrottleDelaySeconds)
+                $script:Calls += [pscustomobject]@{ ResourcePath = $ResourcePath; Method = $Method; Body = $Body }
+                if ($ResourcePath -like '*contacts/search') {
+                    if ($Body.filterGroups[0].filters[0].value -eq 'max.mustermann@contoso.com') {
+                        return [pscustomobject]@{ results = @([pscustomobject]@{ id = '10000000003'; properties = [pscustomobject]@{ email = 'max.mustermann@contoso.com'; firstname = 'Max'; lastname = 'Mustermann'; associatedcompanyid = '10000000001' } }) }
+                    }
+                    return [pscustomobject]@{ results = @() }
+                }
+                if ($Method -eq 'GET') {
+                    return [pscustomobject]@{ results = @([pscustomobject]@{ toObjectId = 10000000003 }, [pscustomobject]@{ toObjectId = 10000000004 }) }
+                }
+            }
+
+            $contact = Get-HubspotContact -Email ' Max.Mustermann@contoso.com '
+            $contact.Id | Should Be '10000000003'
+            $contact.CompanyId | Should Be '10000000001'
+            $script:Calls[0].ResourcePath | Should Be 'crm/objects/2026-09/contacts/search'
+            $script:Calls[0].Body.filterGroups[0].filters[0].operator | Should Be 'EQ'
+            $null = Get-HubspotContact -Email 'max.mustermann@contoso.com'
+            @($script:Calls).Count | Should Be 1
+            Get-HubspotContact -Email 'unbekannt@contoso.com' | Should Be $null
+
+            $script:Calls = @()
+            (@(Get-HubspotDealContacts -DealId '42') -join ',') | Should Be '10000000003,10000000004'
+            Add-HubspotDealContact -DealId '42' -ContactId '10000000003'
+            Remove-HubspotDealContact -DealId '42' -ContactId '10000000004'
+            $put = $script:Calls | Where-Object Method -eq 'PUT'
+            $put.ResourcePath | Should Be 'crm/objects/2026-09/deals/42/associations/contacts/10000000003'
+            @($put.Body)[0].associationTypeId | Should Be 3
+            ($script:Calls | Where-Object Method -eq 'DELETE').ResourcePath | Should Be 'crm/objects/2026-09/deals/42/associations/contacts/10000000004'
+
+            function Convert-HubspotDealPropertiesForWrite { param ([hashtable]$Properties, [string]$AccessToken) return $Properties }
+            function Convert-HubspotRecordToObject { param ($Record, [string]$AccessToken) return $Record }
+            $script:Calls = @()
+            $null = New-HubspotDeal -Properties @{ dealname = 'X' } -PrimaryCompanyId '10000000001' -ContactId '10000000003'
+            $associations = @($script:Calls[0].Body.associations)
+            ($associations | ForEach-Object { "$($_.to.id):$($_.types[0].associationTypeId)" }) -join ',' | Should Be '10000000001:5,10000000003:3'
+        }
+    }
+
+    It 'sends a one-element array body as JSON array' {
+        Remove-Module InvokeHubspot -ErrorAction SilentlyContinue
+        Import-Module $manifestPath -Force -ErrorAction Stop
+
+        InModuleScope InvokeHubspot {
+            $script:SentBody = $null
+            function Get-HubspotBearerToken { param ([string]$AccessToken, [switch]$ForcePrompt) return 'token' }
+            function Invoke-RestMethod {
+                param ([uri]$Uri, [string]$Method, [hashtable]$Headers, $Body, [string]$ContentType)
+                $script:SentBody = $Body
+                return $null
+            }
+
+            Add-HubspotDealContact -DealId '42' -ContactId '10000000003'
+            $script:SentBody.TrimStart().StartsWith('[') | Should Be $true
         }
     }
 

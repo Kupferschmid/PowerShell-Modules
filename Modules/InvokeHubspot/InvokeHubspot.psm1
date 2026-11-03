@@ -2,7 +2,7 @@
 # Private App Bearer token support for HubSpot CRM Deals API.
 # Supports local sessions via Windows Credential Manager and Azure Automation via Get-AutomationPSCredential.
 
-# Version 0.4.3 07.10.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
+# Version 0.5.0 03.11.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
 
 #Requires -Modules @{ ModuleName = 'BetterCredentials'; ModuleVersion = '4.5' }
 
@@ -25,6 +25,7 @@ $script:HubspotSettings = [ordered]@{
 # HubSpot-defined association type IDs (deal -> company).
 $script:HubspotDealToPrimaryCompanyTypeId = 5
 $script:HubspotDealToCompanyTypeId = 341
+$script:HubspotDealToContactTypeId = 3
 
 <#
 .SYNOPSIS
@@ -383,7 +384,8 @@ function Invoke-HubspotRequest {
 
     if ($Body) {
         $invokeParams.ContentType = 'application/json'
-        $invokeParams.Body = $Body | ConvertTo-Json -Depth 20
+        # -InputObject instead of the pipeline: a one-element array must stay a JSON array.
+        $invokeParams.Body = ConvertTo-Json -InputObject $Body -Depth 20
     }
 
     for ($attempt = 0; $attempt -le $RetryCount; $attempt++) {
@@ -1634,6 +1636,10 @@ New-HubspotDeal -Properties @{
 New-HubspotDeal -Properties @{ dealname = 'Deal mit Firma'; pipeline = 'default'; dealstage = '1110595160' } -PrimaryCompanyId '10000000001'
 
 .EXAMPLE
+# Deal mit primaerer Firma und Kontakt anlegen.
+New-HubspotDeal -Properties @{ dealname = 'Deal mit Kontakt'; pipeline = 'default'; dealstage = '1110595160' } -PrimaryCompanyId '10000000001' -ContactId '10000000003'
+
+.EXAMPLE
 # Troubleshooting: Stage-Mapping pruefen und bei Fehlern mit interner Stage-ID anlegen.
 New-HubspotDeal -Properties @{
     dealname = 'Fallback mit Stage-ID'
@@ -1647,6 +1653,7 @@ function New-HubspotDeal {
         [Parameter(Mandatory = $true)][hashtable]$Properties,
         [Parameter(Mandatory = $false)]$Associations,
         [Parameter(Mandatory = $false)][string]$PrimaryCompanyId,
+        [Parameter(Mandatory = $false)][string[]]$ContactId,
         [Parameter(Mandatory = $false)][string]$AccessToken
     )
 
@@ -1664,6 +1671,15 @@ function New-HubspotDeal {
             to = @{ id = $PrimaryCompanyId }
             types = @(
                 @{ associationCategory = 'HUBSPOT_DEFINED'; associationTypeId = $script:HubspotDealToPrimaryCompanyTypeId }
+            )
+        }
+    }
+
+    foreach ($contact in @($ContactId | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $associationList += @{
+            to = @{ id = $contact }
+            types = @(
+                @{ associationCategory = 'HUBSPOT_DEFINED'; associationTypeId = $script:HubspotDealToContactTypeId }
             )
         }
     }
@@ -2137,5 +2153,130 @@ function Remove-HubspotDealCompany {
 
     if ($PSCmdlet.ShouldProcess("Deal $DealId", "Verknuepfung zu Firma $CompanyId entfernen")) {
         $null = Invoke-HubspotRest -Path "$DealId/associations/companies/$CompanyId" -Method 'DELETE' -AccessToken $AccessToken
+    }
+}
+
+<#
+.SYNOPSIS
+Gets a HubSpot contact by email address.
+
+.DESCRIPTION
+Searches the contact with exactly this primary email address and returns Id, Email, FirstName,
+LastName and CompanyId (associatedcompanyid). Results are cached per session; use -Refresh to
+bypass the cache. Returns $null when no contact matches.
+
+.EXAMPLE
+Get-HubspotContact -Email 'max.mustermann@contoso.com'
+
+.EXAMPLE
+(Get-HubspotContact -Email 'max.mustermann@contoso.com').Id
+#>
+function Get-HubspotContact {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][string]$Email,
+        [Parameter(Mandatory = $false)][switch]$Refresh,
+        [Parameter(Mandatory = $false)][string]$AccessToken
+    )
+
+    if (-not $script:HubspotContactCache) {
+        $script:HubspotContactCache = @{}
+    }
+
+    $cacheKey = $Email.Trim().ToLowerInvariant()
+    if (-not $Refresh.IsPresent -and $script:HubspotContactCache.ContainsKey($cacheKey)) {
+        return $script:HubspotContactCache[$cacheKey]
+    }
+
+    $body = @{
+        filterGroups = @(@{ filters = @(@{ propertyName = 'email'; operator = 'EQ'; value = $Email.Trim() }) })
+        properties = @('email', 'firstname', 'lastname', 'associatedcompanyid')
+        limit = 1
+    }
+    $response = Invoke-HubspotRequest -ResourcePath (Get-HubspotCrmPath -Api 'objects' -Resource 'contacts/search') -Method 'POST' -Body $body -AccessToken $AccessToken
+    $contact = @($response.results) | Select-Object -First 1
+
+    $result = $null
+    if ($contact) {
+        $result = [pscustomobject]@{
+            Id = [string]$contact.id
+            Email = [string]$contact.properties.email
+            FirstName = [string]$contact.properties.firstname
+            LastName = [string]$contact.properties.lastname
+            CompanyId = [string]$contact.properties.associatedcompanyid
+        }
+    }
+
+    $script:HubspotContactCache[$cacheKey] = $result
+    return $result
+}
+
+<#
+.SYNOPSIS
+Lists the contact ids associated with a deal.
+
+.EXAMPLE
+Get-HubspotDealContacts -DealId '12345678903'
+#>
+function Get-HubspotDealContacts {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][string]$DealId,
+        [Parameter(Mandatory = $false)][string]$AccessToken
+    )
+
+    $response = Invoke-HubspotRest -Path "$DealId/associations/contacts" -AccessToken $AccessToken
+    foreach ($association in @($response.results)) {
+        if ($association) {
+            [string]$association.toObjectId
+        }
+    }
+}
+
+<#
+.SYNOPSIS
+Associates a contact with a deal.
+
+.DESCRIPTION
+Creates the default deal-to-contact association. Existing associations are kept;
+calling it for an already associated contact changes nothing.
+
+.EXAMPLE
+Add-HubspotDealContact -DealId '12345678903' -ContactId '10000000003'
+#>
+function Add-HubspotDealContact {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param (
+        [Parameter(Mandatory = $true)][string]$DealId,
+        [Parameter(Mandatory = $true)][string]$ContactId,
+        [Parameter(Mandatory = $false)][string]$AccessToken
+    )
+
+    if ($PSCmdlet.ShouldProcess("Deal $DealId", "Kontakt $ContactId verknuepfen")) {
+        $body = @(@{ associationCategory = 'HUBSPOT_DEFINED'; associationTypeId = $script:HubspotDealToContactTypeId })
+        $null = Invoke-HubspotRest -Path "$DealId/associations/contacts/$ContactId" -Method 'PUT' -Body $body -AccessToken $AccessToken
+    }
+}
+
+<#
+.SYNOPSIS
+Removes all associations between a deal and a contact.
+
+.DESCRIPTION
+Neither the deal nor the contact is deleted.
+
+.EXAMPLE
+Remove-HubspotDealContact -DealId '12345678903' -ContactId '10000000003'
+#>
+function Remove-HubspotDealContact {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param (
+        [Parameter(Mandatory = $true)][string]$DealId,
+        [Parameter(Mandatory = $true)][string]$ContactId,
+        [Parameter(Mandatory = $false)][string]$AccessToken
+    )
+
+    if ($PSCmdlet.ShouldProcess("Deal $DealId", "Verknuepfung zu Kontakt $ContactId entfernen")) {
+        $null = Invoke-HubspotRest -Path "$DealId/associations/contacts/$ContactId" -Method 'DELETE' -AccessToken $AccessToken
     }
 }

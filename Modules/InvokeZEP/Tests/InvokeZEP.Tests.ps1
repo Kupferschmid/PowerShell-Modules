@@ -6,7 +6,7 @@ if (-not $config -or [string]::IsNullOrWhiteSpace($config.BaseUri)) {
     throw 'Get-ZEPConfiguration returned an invalid configuration object.'
 }
 
-$commands = @('Get-ZEPConfiguration', 'Set-ZEPConfiguration', 'Invoke-ZEPRest', 'Get-ZEPOffer', 'Get-ZEPOffers', 'Get-ZEPOfferItems', 'Search-ZEPOffers', 'ConvertFrom-ZEPDateTime', 'ConvertTo-ZEPTypedOffer', 'Get-ZEPRecentOffers', 'Get-ZEPOffersByStatus', 'Get-ZEPOffersById', 'Get-ZEPEmployee')
+$commands = @('Get-ZEPConfiguration', 'Set-ZEPConfiguration', 'Invoke-ZEPRest', 'Get-ZEPOffer', 'Get-ZEPOffers', 'Get-ZEPOfferItems', 'Search-ZEPOffers', 'ConvertFrom-ZEPDateTime', 'ConvertTo-ZEPTypedOffer', 'Get-ZEPRecentOffers', 'Get-ZEPOffersByStatus', 'Get-ZEPOffersById', 'Get-ZEPEmployee', 'Get-ZEPCustomerContact')
 foreach ($commandName in $commands) {
     if (-not (Get-Command -Name $commandName -ErrorAction SilentlyContinue)) {
         throw "Command '$commandName' was not exported from the module."
@@ -60,7 +60,7 @@ finally {
 }
 
 $manifest = Test-ModuleManifest -Path (Join-Path $PSScriptRoot '..\InvokeZEP.psd1')
-if ($manifest.Version.ToString() -ne '0.4.0') {
+if ($manifest.Version.ToString() -ne '0.5.0') {
     throw "Unexpected module version $($manifest.Version)."
 }
 
@@ -205,6 +205,33 @@ Import-Module $modulePath -Force
     if ($script:CapturedUri -notmatch 'id%5b%5d=1&id%5b%5d=2') {
         throw "Invoke-ZEPRest baut Listenparameter falsch: $($script:CapturedUri)"
     }
+}
+
+Remove-Module InvokeZEP -Force
+Import-Module $modulePath -Force
+
+# --- Get-ZEPCustomerContact: path, session cache, $null for unknown contacts
+& (Get-Module InvokeZEP) {
+    $script:ContactCalls = [System.Collections.Generic.List[string]]::new()
+    function script:Invoke-ZEPRest {
+        param ([string]$Path, [string]$Method = 'GET', [hashtable]$Query, $Body, [int]$RetryCount, [double]$ThrottleDelaySeconds)
+        $script:ContactCalls.Add($Path)
+        if ($Path -eq 'customers/10000000001/contacts/12345') {
+            return [pscustomobject]@{ data = [pscustomobject]@{ id = 12345; first_name = 'Max'; last_name = 'Mustermann'; email = 'max.mustermann@contoso.com' } }
+        }
+        $ex = [System.Exception]::new('Not Found')
+        Add-Member -InputObject $ex -MemberType NoteProperty -Name Response -Value ([pscustomobject]@{ StatusCode = 404 }) -Force
+        throw $ex
+    }
+}
+
+$zepContact = Get-ZEPCustomerContact -CustomerId '10000000001' -ContactId '12345'
+$null = Get-ZEPCustomerContact -CustomerId '10000000001' -ContactId '12345'
+if ($zepContact.email -ne 'max.mustermann@contoso.com' -or (& (Get-Module InvokeZEP) { $script:ContactCalls.Count }) -ne 1) {
+    throw 'Get-ZEPCustomerContact liest den Kontakt nicht oder cacht ihn nicht.'
+}
+if ($null -ne (Get-ZEPCustomerContact -CustomerId '10000000001' -ContactId '99999')) {
+    throw 'Get-ZEPCustomerContact sollte fuer unbekannte Kontakte $null liefern.'
 }
 
 Remove-Module InvokeZEP -Force

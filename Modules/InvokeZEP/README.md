@@ -59,6 +59,7 @@ Set-ZEPConfiguration -BaseUri 'https://www.zep-online.de/zepxxxx/next/api/v1' -D
 | `ConvertTo-ZEPTypedOffer`         | Wandelt ein Angebot in verlässliche Typen um (int-IDs, String-Kundennummern, UTC-Zeiten, Datumswerte) |
 | `ConvertFrom-ZEPDateTime`         | Korrigiert ZEP-Zeitstempel (Berliner Ortszeit mit falschem `Z`) nach echtem UTC |
 | `Get-ZEPEmployee`                 | Liest einen Mitarbeiter per Benutzername (z. B. für die E-Mail-Adresse), mit Sitzungs-Cache |
+| `Get-ZEPCustomerContact`          | Liest einen Kunden-Ansprechpartner (z. B. `customer_contact_id` eines Angebots) mit E-Mail-Adresse, mit Sitzungs-Cache |
 
 ## Get-Help Referenz
 

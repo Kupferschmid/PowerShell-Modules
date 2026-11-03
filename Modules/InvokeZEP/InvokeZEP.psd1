@@ -1,11 +1,11 @@
 @{
     RootModule = 'InvokeZEP.psm1'
-    ModuleVersion = '0.4.0'
+    ModuleVersion = '0.5.0'
     GUID = '4abf4e3d-44de-4e0a-b4da-6e4a9f8f33c6'
     Author = 'Klaus Kupferschmid'
     CompanyName = 'tempero.it GmbH & hhpberlin GmbH'
     Copyright = '(c) Klaus Kupferschmid. All rights reserved.'
-    Description = 'PowerShell module for reading ZEP offers, offer items and employees via REST API.'
+    Description = 'PowerShell module for reading ZEP offers, offer items, employees and customer contacts via REST API.'
     PowerShellVersion = '5.1'
     FunctionsToExport = @(
         'Get-ZEPConfiguration',
@@ -21,7 +21,8 @@
         'Get-ZEPRecentOffers',
         'Get-ZEPOffersByStatus',
         'Get-ZEPOffersById',
-        'Get-ZEPEmployee'
+        'Get-ZEPEmployee',
+        'Get-ZEPCustomerContact'
     )
     CmdletsToExport = @()
     VariablesToExport = '*'
@@ -32,6 +33,8 @@
             LicenseUri = 'https://github.com/Kupferschmid/PowerShell-Modules/blob/main/LICENSE'
             ProjectUri = 'https://github.com/Kupferschmid/PowerShell-Modules'
             ReleaseNotes = @'
+0.5.0
+- New Get-ZEPCustomerContact: reads a contact person of a customer (e.g. the customer_contact_id of an offer) with session cache.
 0.4.0
 - New Get-ZEPOffersByStatus: reads all offers with the given status ids via orderBy=status (supported by ZEP since 23.10.2026) and stops after the highest requested status. Throws if the API returns an unsorted list.
 0.3.1
