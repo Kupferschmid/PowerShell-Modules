@@ -98,6 +98,12 @@ Remove-HubspotDealContact -DealId '12345678903' -ContactId '10000000003'
 New-HubspotDeal -Properties @{ dealname = 'Neu' } -PrimaryCompanyId '10000000001' -ContactId '10000000003'
 ```
 
+## Rate limits
+
+HubSpot limits privately distributed apps per 10 seconds (e.g. 190) and per day (shared by all apps of the account);
+the CRM search API allows 5 requests per second per account. The module waits 0.2 s before each request. On HTTP 429 it
+waits for `Retry-After` (or the 10 s window if the header is missing) and retries (since 0.5.1).
+
 ## Configuration
 
 ```powershell

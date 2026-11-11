@@ -2,7 +2,7 @@
 # Lokale Sitzungen lesen das Bearer-Token für die hhpberlin-ZEP-Instanz aus dem Windows Credential Manager.
 # In Azure Automation Runbooks wird das Token aus Get-AutomationPSCredential gelesen.
 
-# Version 0.5.0 03.11.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
+# Version 0.5.1 04.11.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
 
 #Requires -Modules @{ ModuleName = 'BetterCredentials'; ModuleVersion = '4.5' }
 
@@ -268,13 +268,40 @@ function Get-ZEPBearerToken {
     return Convert-SecureStringToPlainText -SecureString $credential.Password
 }
 
+# Seconds from the Retry-After header of a failed request, or $null.
+# PowerShell 7 exposes an HttpResponseMessage, Windows PowerShell 5.1 an HttpWebResponse.
+function Get-ZEPRetryAfterSeconds {
+    param ($ErrorRecord)
+
+    $response = $ErrorRecord.Exception.Response
+    if (-not $response -or -not $response.Headers) {
+        return $null
+    }
+
+    $retryAfter = $null
+    try { $retryAfter = $response.Headers.RetryAfter } catch { $retryAfter = $null }
+    if ($retryAfter) {
+        if ($retryAfter.Delta) { return [int][Math]::Ceiling($retryAfter.Delta.TotalSeconds) }
+        if ($retryAfter.Date) { return [int][Math]::Ceiling(($retryAfter.Date - [DateTimeOffset]::UtcNow).TotalSeconds) }
+    }
+
+    $raw = $null
+    try { $raw = [string]$response.Headers['Retry-After'] } catch { $raw = $null }
+    $seconds = 0
+    if ([int]::TryParse($raw, [ref]$seconds)) { return $seconds }
+    $date = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse($raw, [ref]$date)) { return [int][Math]::Ceiling(($date - [DateTimeOffset]::UtcNow).TotalSeconds) }
+    return $null
+}
+
 <#
 .SYNOPSIS
 Executes a ZEP REST API request.
 
 .DESCRIPTION
 Sends an HTTP request to the configured ZEP API endpoint with bearer token
-authentication and retry handling for transient 429/503 responses.
+authentication and retry handling for transient 429/503 responses. On 429 (rate limit: 1000 requests
+per 5 minutes per tenant) it waits for the Retry-After time given by ZEP (default 60 s).
 
 .PARAMETER Path
 Relative API path, for example 'offers' or 'offers/12345'.
@@ -382,7 +409,18 @@ function Invoke-ZEPRest {
                 $statusCode = [int]$_.Exception.Response.StatusCode
             }
 
-            if ($attempt -lt $RetryCount -and ($statusCode -eq 429 -or $statusCode -eq 503)) {
+            # ZEP: 1000 requests per 5 minutes per tenant (shared by all tokens). A 429 carries Retry-After,
+            # which must be honoured instead of retrying at once.
+            if ($attempt -lt $RetryCount -and $statusCode -eq 429) {
+                $waitSeconds = Get-ZEPRetryAfterSeconds -ErrorRecord $_
+                if (-not $waitSeconds) { $waitSeconds = 60 }
+                $waitSeconds = [Math]::Min(300, [Math]::Max(1, $waitSeconds)) + 1
+                Write-Warning "ZEP-Limit erreicht (HTTP 429), warte $waitSeconds s (Retry-After)."
+                Start-Sleep -Seconds $waitSeconds
+                continue
+            }
+
+            if ($attempt -lt $RetryCount -and $statusCode -eq 503) {
                 $backoffSeconds = [Math]::Min(10, [Math]::Pow(2, $attempt + 1))
                 Start-Sleep -Seconds $backoffSeconds
                 continue

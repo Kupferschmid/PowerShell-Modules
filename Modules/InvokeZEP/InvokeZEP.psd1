@@ -1,6 +1,6 @@
 @{
     RootModule = 'InvokeZEP.psm1'
-    ModuleVersion = '0.5.0'
+    ModuleVersion = '0.5.1'
     GUID = '4abf4e3d-44de-4e0a-b4da-6e4a9f8f33c6'
     Author = 'Klaus Kupferschmid'
     CompanyName = 'tempero.it GmbH & hhpberlin GmbH'
@@ -33,6 +33,8 @@
             LicenseUri = 'https://github.com/Kupferschmid/PowerShell-Modules/blob/main/LICENSE'
             ProjectUri = 'https://github.com/Kupferschmid/PowerShell-Modules'
             ReleaseNotes = @'
+0.5.1
+- HTTP 429: waits for the Retry-After time sent by ZEP (default 60 s) instead of retrying after 2/4 s (ZEP limit: 1000 requests per 5 minutes per tenant).
 0.5.0
 - New Get-ZEPCustomerContact: reads a contact person of a customer (e.g. the customer_contact_id of an offer) with session cache.
 0.4.0

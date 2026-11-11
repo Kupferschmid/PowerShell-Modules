@@ -60,7 +60,7 @@ finally {
 }
 
 $manifest = Test-ModuleManifest -Path (Join-Path $PSScriptRoot '..\InvokeZEP.psd1')
-if ($manifest.Version.ToString() -ne '0.5.0') {
+if ($manifest.Version.ToString() -ne '0.5.1') {
     throw "Unexpected module version $($manifest.Version)."
 }
 
@@ -232,6 +232,39 @@ if ($zepContact.email -ne 'max.mustermann@contoso.com' -or (& (Get-Module Invoke
 }
 if ($null -ne (Get-ZEPCustomerContact -CustomerId '10000000001' -ContactId '99999')) {
     throw 'Get-ZEPCustomerContact sollte fuer unbekannte Kontakte $null liefern.'
+}
+
+Remove-Module InvokeZEP -Force
+Import-Module $modulePath -Force
+
+# --- Invoke-ZEPRest waits for Retry-After on HTTP 429 (PS 7 style header and PS 5.1 style header)
+& (Get-Module InvokeZEP) {
+    function script:Get-ZEPBearerToken { return 'test-token' }
+    function script:Start-Sleep { param ([int]$Seconds, [int]$Milliseconds) if ($Seconds) { $script:SleptSeconds += $Seconds } }
+
+    foreach ($headers in @(
+        [pscustomobject]@{ RetryAfter = [pscustomobject]@{ Delta = [timespan]::FromSeconds(7); Date = $null } },
+        @{ 'Retry-After' = '7' }
+    )) {
+        $script:SleptSeconds = 0
+        $script:RestCalls = 0
+        $script:FakeHeaders = $headers
+        function script:Invoke-RestMethod {
+            param ([uri]$Uri, [string]$Method, [hashtable]$Headers, $ErrorAction)
+            $script:RestCalls++
+            if ($script:RestCalls -eq 1) {
+                $ex = [System.Exception]::new('Too Many Attempts.')
+                Add-Member -InputObject $ex -MemberType NoteProperty -Name Response -Value ([pscustomobject]@{ StatusCode = 429; Headers = $script:FakeHeaders }) -Force
+                throw $ex
+            }
+            return [pscustomobject]@{ data = @() }
+        }
+
+        $null = Invoke-ZEPRest -Path 'offers' -ThrottleDelaySeconds 0 -WarningAction SilentlyContinue
+        if ($script:RestCalls -ne 2 -or $script:SleptSeconds -ne 8) {
+            throw "Invoke-ZEPRest wartet bei 429 nicht auf Retry-After (Aufrufe $($script:RestCalls), gewartet $($script:SleptSeconds) s)."
+        }
+    }
 }
 
 Remove-Module InvokeZEP -Force

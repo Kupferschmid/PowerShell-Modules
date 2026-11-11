@@ -6,7 +6,7 @@ Describe 'InvokeHubspot module smoke tests' {
         $manifest = Test-ModuleManifest $manifestPath
 
         $manifest.Name | Should Be 'InvokeHubspot'
-        $manifest.Version.ToString() | Should Be '0.5.0'
+        $manifest.Version.ToString() | Should Be '0.5.1'
     }
 
     It 'imports the module and exposes the expected public commands' {
@@ -675,6 +675,37 @@ Describe 'InvokeHubspot module smoke tests' {
             $null = New-HubspotDeal -Properties @{ dealname = 'X' } -PrimaryCompanyId '10000000001' -ContactId '10000000003'
             $associations = @($script:Calls[0].Body.associations)
             ($associations | ForEach-Object { "$($_.to.id):$($_.types[0].associationTypeId)" }) -join ',' | Should Be '10000000001:5,10000000003:3'
+        }
+    }
+
+    It 'waits for Retry-After (or the 10 s window) on HTTP 429' {
+        Remove-Module InvokeHubspot -ErrorAction SilentlyContinue
+        Import-Module $manifestPath -Force -ErrorAction Stop
+
+        InModuleScope InvokeHubspot {
+            function Get-HubspotBearerToken { param ([string]$AccessToken, [switch]$ForcePrompt) return 'token' }
+            function Start-Sleep { param ([int]$Seconds, [int]$Milliseconds) if ($Seconds) { $script:SleptSeconds += $Seconds } }
+            function Invoke-RestMethod {
+                param ([uri]$Uri, [string]$Method, [hashtable]$Headers, $Body, [string]$ContentType)
+                $script:RestCalls++
+                if ($script:RestCalls -eq 1) {
+                    $ex = [System.Exception]::new('Too Many Requests')
+                    Add-Member -InputObject $ex -MemberType NoteProperty -Name Response -Value ([pscustomobject]@{ StatusCode = 429; Headers = $script:FakeHeaders }) -Force
+                    throw $ex
+                }
+                return [pscustomobject]@{ results = @() }
+            }
+
+            $script:SleptSeconds = 0; $script:RestCalls = 0
+            $script:FakeHeaders = [pscustomobject]@{ RetryAfter = [pscustomobject]@{ Delta = [timespan]::FromSeconds(3); Date = $null } }
+            $null = Invoke-HubspotRequest -ResourcePath 'crm/objects/2026-09/deals' -ThrottleDelaySeconds 0 -WarningAction SilentlyContinue
+            $script:RestCalls | Should Be 2
+            $script:SleptSeconds | Should Be 4
+
+            $script:SleptSeconds = 0; $script:RestCalls = 0
+            $script:FakeHeaders = @{}
+            $null = Invoke-HubspotRequest -ResourcePath 'crm/objects/2026-09/deals' -ThrottleDelaySeconds 0 -WarningAction SilentlyContinue
+            $script:SleptSeconds | Should Be 11
         }
     }
 

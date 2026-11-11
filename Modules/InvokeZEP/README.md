@@ -97,6 +97,12 @@ Das Modul unterstützt zwei Umgebungen:
 
 **Azure Automation Runbook:** Das Token wird über `Get-AutomationPSCredential` gelesen. Der Credential-Name entspricht dem konfigurierten `ServiceUserName`.
 
+## Abfragelimit
+
+ZEP erlaubt **1.000 Anfragen je 5 Minuten für den ganzen Mandanten** (alle Tokens und Anbindungen zusammen) und höchstens
+25 gleichzeitige Anfragen. Das Modul wartet vor jeder Anfrage 0,2 s. Antwortet ZEP mit HTTP 429, wartet es die im Header
+`Retry-After` genannte Zeit ab (ohne Angabe 60 s) und versucht es erneut (ab 0.5.1).
+
 ## Neue Angebote ohne Komplett-Download
 
 Die ZEP-API kann `/offers` nicht filtern (`status`, `modified_after`, … werden ignoriert), aber seit 23.10.2026
