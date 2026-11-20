@@ -6,7 +6,7 @@ if (-not $config -or [string]::IsNullOrWhiteSpace($config.BaseUri)) {
     throw 'Get-ZEPConfiguration returned an invalid configuration object.'
 }
 
-$commands = @('Get-ZEPConfiguration', 'Set-ZEPConfiguration', 'Invoke-ZEPRest', 'Get-ZEPOffer', 'Get-ZEPOffers', 'Get-ZEPOfferItems', 'Search-ZEPOffers', 'ConvertFrom-ZEPDateTime', 'ConvertTo-ZEPTypedOffer', 'Get-ZEPRecentOffers', 'Get-ZEPOffersByStatus', 'Get-ZEPOffersById', 'Get-ZEPEmployee', 'Get-ZEPCustomerContact')
+$commands = @('Get-ZEPConfiguration', 'Set-ZEPConfiguration', 'Invoke-ZEPRest', 'Get-ZEPOffer', 'Get-ZEPOffers', 'Get-ZEPOfferItems', 'Search-ZEPOffers', 'ConvertFrom-ZEPDateTime', 'ConvertTo-ZEPTypedOffer', 'Get-ZEPRecentOffers', 'Get-ZEPOffersByStatus', 'Get-ZEPOffersById', 'Get-ZEPEmployee', 'Get-ZEPCustomerContact', 'Get-ZEPOfferCategories', 'Get-ZEPProject')
 foreach ($commandName in $commands) {
     if (-not (Get-Command -Name $commandName -ErrorAction SilentlyContinue)) {
         throw "Command '$commandName' was not exported from the module."
@@ -60,7 +60,7 @@ finally {
 }
 
 $manifest = Test-ModuleManifest -Path (Join-Path $PSScriptRoot '..\InvokeZEP.psd1')
-if ($manifest.Version.ToString() -ne '0.5.1') {
+if ($manifest.Version.ToString() -ne '0.6.1') {
     throw "Unexpected module version $($manifest.Version)."
 }
 
@@ -232,6 +232,62 @@ if ($zepContact.email -ne 'max.mustermann@contoso.com' -or (& (Get-Module Invoke
 }
 if ($null -ne (Get-ZEPCustomerContact -CustomerId '10000000001' -ContactId '99999')) {
     throw 'Get-ZEPCustomerContact sollte fuer unbekannte Kontakte $null liefern.'
+}
+
+Remove-Module InvokeZEP -Force
+Import-Module $modulePath -Force
+
+# --- Get-ZEPOfferCategories: single offer, only type 'angebot' by default, empty list without categories
+& (Get-Module InvokeZEP) {
+    function script:Invoke-ZEPRest {
+        param ([string]$Path, [string]$Method = 'GET', [hashtable]$Query, $Body, [int]$RetryCount, [double]$ThrottleDelaySeconds)
+        if ($Path -eq 'offers/12345') {
+            return [pscustomobject]@{ data = [pscustomobject]@{ id = 12345; categories = @(
+                [pscustomobject]@{ name = 'Ausschreibung'; type = [pscustomobject]@{ id = 'angebot'; name = 'Angebot' } },
+                [pscustomobject]@{ name = 'Nachtrag'; type = [pscustomobject]@{ id = 'angebot'; name = 'Angebot' } },
+                [pscustomobject]@{ name = 'Ausschreibung'; type = [pscustomobject]@{ id = 'projekt'; name = 'Projekt' } }
+            ) } }
+        }
+        return [pscustomobject]@{ data = [pscustomobject]@{ id = 12346; categories = @() } }
+    }
+}
+
+$offerCategories = @(Get-ZEPOfferCategories -Id 12345)
+if (($offerCategories -join ',') -ne 'Ausschreibung,Nachtrag') {
+    throw "Get-ZEPOfferCategories liefert falsche Kategorien: $($offerCategories -join ',')"
+}
+if (@(Get-ZEPOfferCategories -Id 12345 -Type '').Count -ne 2) {
+    throw 'Get-ZEPOfferCategories -Type "" sollte alle Kategorien (eindeutige Namen) liefern.'
+}
+if (@(Get-ZEPOfferCategories -Id 12346).Count -ne 0) {
+    throw 'Get-ZEPOfferCategories sollte ohne Kategorien eine leere Liste liefern.'
+}
+
+Remove-Module InvokeZEP -Force
+Import-Module $modulePath -Force
+
+# --- Get-ZEPProject: path, session cache, $null for unknown projects
+& (Get-Module InvokeZEP) {
+    $script:ProjectCalls = [System.Collections.Generic.List[string]]::new()
+    function script:Invoke-ZEPRest {
+        param ([string]$Path, [string]$Method = 'GET', [hashtable]$Query, $Body, [int]$RetryCount, [double]$ThrottleDelaySeconds)
+        $script:ProjectCalls.Add($Path)
+        if ($Path -eq 'projects/1234') {
+            return [pscustomobject]@{ data = [pscustomobject]@{ id = 1234; name = '26B0001'; description = 'Musterprojekt'; dynamicAttributes = @() } }
+        }
+        $ex = [System.Exception]::new('Not Found')
+        Add-Member -InputObject $ex -MemberType NoteProperty -Name Response -Value ([pscustomobject]@{ StatusCode = 404 }) -Force
+        throw $ex
+    }
+}
+
+$zepProject = Get-ZEPProject -Id 1234
+$null = Get-ZEPProject -Id 1234
+if ($zepProject.name -ne '26B0001' -or (& (Get-Module InvokeZEP) { $script:ProjectCalls.Count }) -ne 1) {
+    throw 'Get-ZEPProject liest das Projekt nicht oder cacht es nicht.'
+}
+if ($null -ne (Get-ZEPProject -Id 9999)) {
+    throw 'Get-ZEPProject sollte fuer unbekannte Projekte $null liefern.'
 }
 
 Remove-Module InvokeZEP -Force

@@ -2,7 +2,7 @@
 # Lokale Sitzungen lesen das Bearer-Token für die hhpberlin-ZEP-Instanz aus dem Windows Credential Manager.
 # In Azure Automation Runbooks wird das Token aus Get-AutomationPSCredential gelesen.
 
-# Version 0.5.1 04.11.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
+# Version 0.6.1 20.11.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
 
 #Requires -Modules @{ ModuleName = 'BetterCredentials'; ModuleVersion = '4.5' }
 
@@ -1972,6 +1972,98 @@ function Get-ZEPCustomerContact {
     return $contact
 }
 
+<#
+.SYNOPSIS
+Gets the category names assigned to a ZEP offer.
+
+.DESCRIPTION
+Reads GET /offers/{id} (categories are only part of the single-offer response since ZEP REST API 1.8.0,
+not of the offer list) and returns the names of the assigned categories as strings. By default only
+categories of type 'angebot' are returned; ZEP also lists project categories at an offer.
+Costs one request per call (no cache), so callers should limit how often they ask.
+
+.PARAMETER Type
+Category type id to keep ('angebot' by default). Pass an empty string for all types.
+
+.EXAMPLE
+Get-ZEPOfferCategories -Id 12345
+
+.EXAMPLE
+Get-ZEPOfferCategories -Id 12345 -Type ''
+#>
+function Get-ZEPOfferCategories {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param (
+        [Parameter(Mandatory = $true)][int]$Id,
+        [Parameter(Mandatory = $false)][AllowEmptyString()][string]$Type = 'angebot'
+    )
+
+    $response = Invoke-ZEPRest -Path "offers/$Id"
+    $record = @(Get-ZEPResponseItems -Payload $response) | Select-Object -First 1
+    if (-not $record -or -not $record.categories) {
+        return [string[]]@()
+    }
+
+    $names = @($record.categories |
+        Where-Object { -not $Type -or [string]$_.type.id -eq $Type } |
+        ForEach-Object { [string]$_.name } |
+        Where-Object { $_ } |
+        Select-Object -Unique)
+    return [string[]]$names
+}
+
+<#
+.SYNOPSIS
+Gets a ZEP project by its internal id.
+
+.DESCRIPTION
+Reads GET /projects/{id} (e.g. the project_id of an offer). The project number is the project name
+(e.g. '26B0001', sometimes with a suffix). Dynamic attributes (e.g. a SharePoint link) are included
+in 'dynamicAttributes'. Results are cached per session; use -Refresh to bypass the cache.
+Returns $null when the project does not exist.
+
+.EXAMPLE
+Get-ZEPProject -Id 1234
+
+.EXAMPLE
+# Projekt eines Angebots
+$offer = Get-ZEPOffersById -Id 12345
+(Get-ZEPProject -Id $offer.project_id).name
+#>
+function Get-ZEPProject {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][int]$Id,
+        [Parameter(Mandatory = $false)][switch]$Refresh
+    )
+
+    if (-not $script:ZEPProjectCache) {
+        $script:ZEPProjectCache = @{}
+    }
+    if (-not $Refresh.IsPresent -and $script:ZEPProjectCache.ContainsKey($Id)) {
+        return $script:ZEPProjectCache[$Id]
+    }
+
+    $project = $null
+    try {
+        $response = Invoke-ZEPRest -Path "projects/$Id"
+        $project = @(Get-ZEPResponseItems -Payload $response) | Select-Object -First 1
+    }
+    catch {
+        $statusCode = $null
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+        if ($statusCode -ne 404) {
+            throw
+        }
+    }
+
+    $script:ZEPProjectCache[$Id] = $project
+    return $project
+}
+
 Export-ModuleMember Get-ZEPConfiguration
 Export-ModuleMember Set-ZEPConfiguration
 Export-ModuleMember Invoke-ZEPRest
@@ -1987,3 +2079,5 @@ Export-ModuleMember Get-ZEPOffersByStatus
 Export-ModuleMember Get-ZEPOffersById
 Export-ModuleMember Get-ZEPEmployee
 Export-ModuleMember Get-ZEPCustomerContact
+Export-ModuleMember Get-ZEPOfferCategories
+Export-ModuleMember Get-ZEPProject
