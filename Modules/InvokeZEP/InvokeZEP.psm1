@@ -2,7 +2,8 @@
 # Lokale Sitzungen lesen das Bearer-Token für die hhpberlin-ZEP-Instanz aus dem Windows Credential Manager.
 # In Azure Automation Runbooks wird das Token aus Get-AutomationPSCredential gelesen.
 
-# Version 0.6.1 20.11.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
+# Version 0.7.0 24.11.2026 by Klaus Kupferschmid (tempero.it GmbH & hhpberlin GmbH)
+# Die SOAP-Schnittstelle (Angebotsdokumente) braucht ein eigenes Token: lokal Credential Manager, im Runbook AutomationPSCredential.
 
 #Requires -Modules @{ ModuleName = 'BetterCredentials'; ModuleVersion = '4.5' }
 
@@ -20,6 +21,10 @@ $script:ZEPSettings = [ordered]@{
     DefaultCacheTtlMinutes = 60
     # ZEP returns local wall-clock times of this zone, although the values end with 'Z'.
     ServerTimeZone = 'Europe/Berlin'
+    # SOAP interface (only used for data the REST API does not provide, e.g. offer documents)
+    SoapUri = 'https://www.zep-online.de/zephhpberlin/sync/soap.php?v=10'
+    SoapTokenTarget = 'ZEP_hhpberlin_SoapToken'
+    SoapServiceUserName = 'ZEP_hhpberlin_Soap'
 }
 
 function Update-ZEPDerivedSettings {
@@ -58,6 +63,9 @@ function Get-ZEPConfiguration {
         DefaultThrottleDelaySeconds = $script:ZEPSettings.DefaultThrottleDelaySeconds
         DefaultCacheTtlMinutes = $script:ZEPSettings.DefaultCacheTtlMinutes
         ServerTimeZone = $script:ZEPSettings.ServerTimeZone
+        SoapUri = $script:ZEPSettings.SoapUri
+        SoapTokenTarget = $script:ZEPSettings.SoapTokenTarget
+        SoapServiceUserName = $script:ZEPSettings.SoapServiceUserName
     }
 }
 
@@ -93,6 +101,15 @@ Default cache TTL value for cache-related workflows.
 .PARAMETER ServerTimeZone
 Time zone of the wall-clock times returned by ZEP (IANA or Windows ID), default 'Europe/Berlin'.
 
+.PARAMETER SoapUri
+Endpoint of the ZEP SOAP interface (sync/soap.php?v=10).
+
+.PARAMETER SoapTokenTarget
+Credential target of the SOAP authorization token in Windows Credential Manager.
+
+.PARAMETER SoapServiceUserName
+Credential name of the SOAP token in Azure Automation (Get-AutomationPSCredential).
+
 .EXAMPLE
 Set-ZEPConfiguration -DefaultPageSize 50
 
@@ -118,7 +135,10 @@ function Set-ZEPConfiguration {
         [Parameter(Mandatory = $false)][int]$DefaultPageSize,
         [Parameter(Mandatory = $false)][double]$DefaultThrottleDelaySeconds,
         [Parameter(Mandatory = $false)][int]$DefaultCacheTtlMinutes,
-        [Parameter(Mandatory = $false)][string]$ServerTimeZone
+        [Parameter(Mandatory = $false)][string]$ServerTimeZone,
+        [Parameter(Mandatory = $false)][string]$SoapUri,
+        [Parameter(Mandatory = $false)][string]$SoapTokenTarget,
+        [Parameter(Mandatory = $false)][string]$SoapServiceUserName
     )
 
     if ($PSBoundParameters.ContainsKey('ServiceUserName')) {
@@ -153,6 +173,18 @@ function Set-ZEPConfiguration {
         $null = Get-ZEPTimeZoneInfo -Id $ServerTimeZone
         $script:ZEPSettings.ServerTimeZone = $ServerTimeZone
         $script:ZEPTimeZoneInfo = $null
+    }
+
+    if ($PSBoundParameters.ContainsKey('SoapUri')) {
+        $script:ZEPSettings.SoapUri = $SoapUri
+    }
+
+    if ($PSBoundParameters.ContainsKey('SoapTokenTarget')) {
+        $script:ZEPSettings.SoapTokenTarget = $SoapTokenTarget
+    }
+
+    if ($PSBoundParameters.ContainsKey('SoapServiceUserName')) {
+        $script:ZEPSettings.SoapServiceUserName = $SoapServiceUserName
     }
 
     Update-ZEPDerivedSettings
@@ -2064,6 +2096,228 @@ function Get-ZEPProject {
     return $project
 }
 
+# SOAP authorization token: Azure Automation credential in runbooks, otherwise Windows Credential Manager.
+# Missing locally: asked for once in an interactive session and stored (like the REST token). In non-interactive
+# sessions (scheduled task, service) it never prompts (a prompt would block the run) but raises an error instead.
+function Get-ZEPSoapToken {
+    Initialize-AutomationEnvironment
+
+    if ($env_runbook) {
+        $credential = $null
+        try {
+            $credential = Get-AutomationPSCredential -Name $script:ZEPSettings.SoapServiceUserName -ErrorAction Stop
+        }
+        catch {
+            $credential = $null
+        }
+        if (-not $credential) {
+            throw "ZEP-SOAP-Token fehlt: AutomationPSCredential '$($script:ZEPSettings.SoapServiceUserName)' anlegen."
+        }
+        return Convert-SecureStringToPlainText -SecureString $credential.Password
+    }
+
+    $storedCredential = Get-StoredCredentialSafe -Target $script:ZEPSettings.SoapTokenTarget
+    if ($storedCredential) {
+        return Convert-SecureStringToPlainText -SecureString $storedCredential.Password
+    }
+
+    $isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and
+        -not ([Environment]::GetCommandLineArgs() | Where-Object { $_ -match '^-NonI' })
+    if (-not $isInteractive) {
+        throw "ZEP-SOAP-Token fehlt: einmal interaktiv starten oder im Credential Manager unter '$($script:ZEPSettings.SoapTokenTarget)' hinterlegen (cmdkey /generic:$($script:ZEPSettings.SoapTokenTarget) /user:$($script:ZEPSettings.ServiceUserName) /pass)."
+    }
+
+    Write-Host 'ZEP-SOAP-Token wird benoetigt (ZEP: Administration > Einstellungen > SOAP, nur ablesen, nicht neu generieren)' -ForegroundColor Yellow
+    $credential = Microsoft.PowerShell.Security\Get-Credential -UserName $script:ZEPSettings.ServiceUserName -Message 'Geben Sie das ZEP-SOAP-Token ein'
+    if (-not $credential -or -not $credential.Password -or $credential.Password.Length -eq 0) {
+        throw 'ZEP-SOAP-Token wurde nicht eingegeben.'
+    }
+
+    Set-Credential -Target $script:ZEPSettings.SoapTokenTarget -Credential $credential -Type Generic -Persistence Enterprise -Description 'ZEP SOAP token' > $null
+    return Convert-SecureStringToPlainText -SecureString $credential.Password
+}
+
+<#
+.SYNOPSIS
+Calls an operation of the ZEP SOAP interface.
+
+.DESCRIPTION
+Sends a SOAP request to the ZEP SOAP interface (V10) and returns the response body element as XML.
+Raises an error for SOAP faults and for a response header returnCode other than 0. HTTP 429/503 wait for
+Retry-After (429 default 60 s), other server errors are retried after a short backoff (RetryCount, default 2).
+The request header with the authorization token is added automatically. Use this only for data the
+REST API does not provide. A SOAP fault is raised as an error.
+
+.PARAMETER RequestElement
+Name of the request element from the WSDL, e.g. 'ReadDokumenteRequest'.
+
+.PARAMETER InnerXml
+XML of the request elements after the request header (unqualified element names as in the WSDL).
+
+.EXAMPLE
+Invoke-ZEPSoap -RequestElement 'ReadDokumenteRequest' -InnerXml '<readDokumenteSearchCriteria><angebotId>12345</angebotId></readDokumenteSearchCriteria>'
+#>
+function Invoke-ZEPSoap {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)][string]$RequestElement,
+        [Parameter(Mandatory = $false)][string]$InnerXml = '',
+        [Parameter(Mandatory = $false)][int]$RetryCount = 2,
+        [Parameter(Mandatory = $false)][double]$ThrottleDelaySeconds = $script:ZEPSettings.DefaultThrottleDelaySeconds
+    )
+
+    $token = [System.Security.SecurityElement]::Escape((Get-ZEPSoapToken))
+    $body = '<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:zep="http://zep.provantis.de">' +
+        '<soapenv:Body><zep:' + $RequestElement + '><requestHeader><authorizationToken>' + $token + '</authorizationToken></requestHeader>' +
+        $InnerXml + '</zep:' + $RequestElement + '></soapenv:Body></soapenv:Envelope>'
+    $requestParams = @{
+        Uri = $script:ZEPSettings.SoapUri; Method = 'POST'; Body = [System.Text.Encoding]::UTF8.GetBytes($body)
+        ContentType = 'text/xml; charset=utf-8'; UseBasicParsing = $true; ErrorAction = 'Stop'
+    }
+
+    # The SOAP manual documents no rate limit (SOAP responses carry no X-RateLimit headers, checked 24.11.2026).
+    # Defensive like Invoke-ZEPRest: HTTP 429/503 -> wait Retry-After (429 default 60 s), other 5xx without SOAP
+    # fault -> short backoff; at most RetryCount retries. SOAP faults arrive as HTTP 500 and are not retried.
+    $content = $null
+    for ($attempt = 0; $attempt -le $RetryCount; $attempt++) {
+        if ($ThrottleDelaySeconds -gt 0) {
+            Start-Sleep -Milliseconds ([int]($ThrottleDelaySeconds * 1000))
+        }
+
+        $statusCode = 200
+        $retryAfter = $null
+        $content = $null
+        if ($PSVersionTable.PSVersion.Major -ge 7) {
+            $response = Invoke-WebRequest @requestParams -SkipHttpErrorCheck
+            $statusCode = [int]$response.StatusCode
+            $content = $response.Content
+            if ($statusCode -ge 400 -and $response.Headers) {
+                $raw = $null
+                try { $raw = @($response.Headers['Retry-After'])[0] } catch { $raw = $null }
+                $seconds = 0
+                if ([int]::TryParse([string]$raw, [ref]$seconds)) { $retryAfter = $seconds }
+            }
+        }
+        else {
+            try {
+                $content = (Invoke-WebRequest @requestParams).Content
+            }
+            catch {
+                if (-not ($_.Exception.Response -and $_.Exception.Response.StatusCode)) {
+                    throw
+                }
+                $statusCode = [int]$_.Exception.Response.StatusCode
+                $retryAfter = Get-ZEPRetryAfterSeconds -ErrorRecord $_
+                if ($_.Exception.Response.GetResponseStream) {
+                    try {
+                        $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                        $content = $reader.ReadToEnd()
+                    }
+                    catch {
+                        $content = $null
+                    }
+                }
+            }
+        }
+
+        if ($content -is [byte[]]) {
+            $content = [System.Text.Encoding]::UTF8.GetString($content)
+        }
+        $isFault = [string]$content -match '<([\w.-]+:)?Fault\b'
+        if ($statusCode -lt 400 -or $isFault) {
+            break
+        }
+        if ($attempt -ge $RetryCount) {
+            throw "ZEP-SOAP-Fehler bei ${RequestElement}: HTTP $statusCode (nach $($RetryCount + 1) Versuchen)"
+        }
+        if ($statusCode -eq 429) {
+            $waitSeconds = if ($retryAfter -and $retryAfter -gt 0) { [Math]::Min($retryAfter, 300) } else { 60 }
+            Write-Warning "ZEP-SOAP: Limit erreicht (HTTP 429), warte $waitSeconds s."
+            Start-Sleep -Seconds $waitSeconds
+        }
+        elseif ($statusCode -eq 503 -and $retryAfter -and $retryAfter -gt 0) {
+            Start-Sleep -Seconds ([Math]::Min($retryAfter, 300))
+        }
+        elseif ($statusCode -ge 500) {
+            Start-Sleep -Seconds ([int][Math]::Min(10, [Math]::Pow(2, $attempt + 1)))
+        }
+        else {
+            throw "ZEP-SOAP-Fehler bei ${RequestElement}: HTTP $statusCode"
+        }
+    }
+
+    [xml]$xml = $content
+    $fault = $xml.SelectSingleNode('//*[local-name()="Fault"]')
+    if ($fault) {
+        $faultString = $fault.SelectSingleNode('*[local-name()="faultstring"]')
+        throw "ZEP-SOAP-Fehler bei ${RequestElement}: $(if ($faultString) { $faultString.InnerText } else { $fault.InnerText })"
+    }
+
+    # Content errors are not faults: the response header carries returnCode <> 0 and a message (SOAP manual 3.1.5).
+    $returnCode = $xml.SelectSingleNode('//*[local-name()="responseHeader"]/*[local-name()="returnCode"]')
+    if ($returnCode -and @('0', 'SUCCES', 'SUCCESS') -notcontains $returnCode.InnerText.Trim()) {
+        $message = $xml.SelectSingleNode('//*[local-name()="responseHeader"]/*[local-name()="message"]')
+        throw "ZEP-SOAP-Fehler bei ${RequestElement}: returnCode $($returnCode.InnerText.Trim())$(if ($message -and $message.InnerText) { " - $($message.InnerText)" })"
+    }
+
+    return $xml.SelectSingleNode('//*[local-name()="Body"]/*')
+}
+
+<#
+.SYNOPSIS
+Gets the documents stored at a ZEP offer (offer documents with their current version).
+
+.DESCRIPTION
+Reads the documents of an offer via the SOAP operation readDokumente (the REST API has no version
+information). For an offer document, Version is the version of the currently valid document (e.g. 2
+for V2.0); after the highest document was deleted in ZEP it falls back to the previous version, while the
+offer's name/version fields keep the deleted version. UploadedAt is the creation time of that version in
+UTC (ZEP sends Berlin wall-clock time). Returns an empty list when the offer has no documents.
+
+.EXAMPLE
+Get-ZEPOfferDocuments -OfferId 12345
+
+.EXAMPLE
+# Gueltige Version des Angebotsdokuments
+(Get-ZEPOfferDocuments -OfferId 12345 | Sort-Object Version -Descending | Select-Object -First 1).Version
+#>
+function Get-ZEPOfferDocuments {
+    [CmdletBinding()]
+    param (
+        # ZEP treats angebotId 0 as "no filter" and tries to return all documents, so only real ids are allowed.
+        [Parameter(Mandatory = $true)][ValidateRange(1, 2147483647)][int]$OfferId
+    )
+
+    $responseElement = Invoke-ZEPSoap -RequestElement 'ReadDokumenteRequest' -InnerXml "<readDokumenteSearchCriteria><angebotId>$OfferId</angebotId></readDokumenteSearchCriteria>"
+    $documents = [System.Collections.Generic.List[object]]::new()
+    if (-not $responseElement) {
+        return $documents.ToArray()
+    }
+
+    foreach ($node in @($responseElement.SelectNodes('.//*[local-name()="dokument"]'))) {
+        $value = {
+            param ($name)
+            $child = $node.SelectSingleNode("*[local-name()='$name']")
+            if ($child) { $child.InnerText } else { $null }
+        }
+        $versionText = & $value 'version'
+        $uploadedText = & $value 'hochgeladenAm'
+        $sizeText = & $value 'groesseInByte'
+        $documents.Add([pscustomobject]@{
+            Id         = [int](& $value 'id')
+            OfferId    = $(if (& $value 'angebotId') { [int](& $value 'angebotId') } else { $OfferId })
+            Name       = [string](& $value 'bezeichnung')
+            FileName   = [string](& $value 'dateiname')
+            Version    = $(if ($versionText) { [int]$versionText } else { $null })
+            UploadedAt = $(if ($uploadedText) { ConvertFrom-ZEPDateTime -Value $uploadedText } else { $null })
+            Creator    = [string](& $value 'erstellerUserId')
+            SizeBytes  = $(if ($sizeText) { [int]$sizeText } else { $null })
+        })
+    }
+
+    return $documents.ToArray()
+}
+
 Export-ModuleMember Get-ZEPConfiguration
 Export-ModuleMember Set-ZEPConfiguration
 Export-ModuleMember Invoke-ZEPRest
@@ -2081,3 +2335,5 @@ Export-ModuleMember Get-ZEPEmployee
 Export-ModuleMember Get-ZEPCustomerContact
 Export-ModuleMember Get-ZEPOfferCategories
 Export-ModuleMember Get-ZEPProject
+Export-ModuleMember Invoke-ZEPSoap
+Export-ModuleMember Get-ZEPOfferDocuments

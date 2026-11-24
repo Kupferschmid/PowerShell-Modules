@@ -62,6 +62,8 @@ Set-ZEPConfiguration -BaseUri 'https://www.zep-online.de/zepxxxx/next/api/v1' -D
 | `Get-ZEPCustomerContact`          | Liest einen Kunden-Ansprechpartner (z. B. `customer_contact_id` eines Angebots) mit E-Mail-Adresse, mit Sitzungs-Cache |
 | `Get-ZEPOfferCategories`          | Liest die Kategorien eines Angebots (`GET /offers/{id}`, ab ZEP-API 1.8.0), standardmäßig nur Typ `angebot` – eine Abfrage je Aufruf |
 | `Get-ZEPProject`                  | Liest ein Projekt per ID (z. B. `project_id` eines Angebots; Projektnummer = `name`, dynamische Attribute enthalten), mit Sitzungs-Cache |
+| `Get-ZEPOfferDocuments`           | Liest die Dokumente eines Angebots mit gültiger Version und Erstellzeit (SOAP `readDokumente`; nach dem Löschen eines Dokuments fällt die Version zurück, `name`/`version` am Angebot nicht) |
+| `Invoke-ZEPSoap`                  | Ruft eine Operation der ZEP-SOAP-Schnittstelle (V10) auf; eigenes Token (Credential Manager `ZEP_hhpberlin_SoapToken`, beim ersten Bedarf interaktiv abgefragt wie das REST-Token – im Hintergrund nie; in Azure Automation Credential `ZEP_hhpberlin_Soap`) |
 
 ## Get-Help Referenz
 

@@ -1,11 +1,11 @@
 @{
     RootModule = 'InvokeZEP.psm1'
-    ModuleVersion = '0.6.1'
+    ModuleVersion = '0.7.0'
     GUID = '4abf4e3d-44de-4e0a-b4da-6e4a9f8f33c6'
     Author = 'Klaus Kupferschmid'
     CompanyName = 'tempero.it GmbH & hhpberlin GmbH'
     Copyright = '(c) Klaus Kupferschmid. All rights reserved.'
-    Description = 'PowerShell module for reading ZEP offers, offer items, offer categories, projects, employees and customer contacts via REST API.'
+    Description = 'PowerShell module for reading ZEP offers, offer items, offer categories, offer documents, projects, employees and customer contacts via REST API (offer documents via SOAP).'
     PowerShellVersion = '5.1'
     FunctionsToExport = @(
         'Get-ZEPConfiguration',
@@ -24,7 +24,9 @@
         'Get-ZEPEmployee',
         'Get-ZEPCustomerContact',
         'Get-ZEPOfferCategories',
-        'Get-ZEPProject'
+        'Get-ZEPProject',
+        'Invoke-ZEPSoap',
+        'Get-ZEPOfferDocuments'
     )
     CmdletsToExport = @()
     VariablesToExport = '*'
@@ -35,6 +37,11 @@
             LicenseUri = 'https://github.com/Kupferschmid/PowerShell-Modules/blob/main/LICENSE'
             ProjectUri = 'https://github.com/Kupferschmid/PowerShell-Modules'
             ReleaseNotes = @'
+0.7.0
+- New Invoke-ZEPSoap: calls the ZEP SOAP interface (V10) with its own authorization token (Credential Manager target SoapTokenTarget, asked for once in interactive sessions like the REST token; in Azure Automation the credential SoapServiceUserName; never prompts in non-interactive sessions).
+- New Get-ZEPOfferDocuments: documents of an offer with the currently valid version and creation time (SOAP readDokumente; the REST API has no version information).
+- New settings SoapUri, SoapTokenTarget, SoapServiceUserName in Get-/Set-ZEPConfiguration.
+- Invoke-ZEPSoap raises SOAP faults and response headers with returnCode <> 0 as errors (ZEP fault text included), waits for Retry-After on HTTP 429/503 and retries other server errors briefly, like Invoke-ZEPRest.
 0.6.1
 - Help of Get-ZEPProject uses a placeholder project number.
 0.6.0

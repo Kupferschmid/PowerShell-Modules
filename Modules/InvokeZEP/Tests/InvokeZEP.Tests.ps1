@@ -6,7 +6,7 @@ if (-not $config -or [string]::IsNullOrWhiteSpace($config.BaseUri)) {
     throw 'Get-ZEPConfiguration returned an invalid configuration object.'
 }
 
-$commands = @('Get-ZEPConfiguration', 'Set-ZEPConfiguration', 'Invoke-ZEPRest', 'Get-ZEPOffer', 'Get-ZEPOffers', 'Get-ZEPOfferItems', 'Search-ZEPOffers', 'ConvertFrom-ZEPDateTime', 'ConvertTo-ZEPTypedOffer', 'Get-ZEPRecentOffers', 'Get-ZEPOffersByStatus', 'Get-ZEPOffersById', 'Get-ZEPEmployee', 'Get-ZEPCustomerContact', 'Get-ZEPOfferCategories', 'Get-ZEPProject')
+$commands = @('Get-ZEPConfiguration', 'Set-ZEPConfiguration', 'Invoke-ZEPRest', 'Get-ZEPOffer', 'Get-ZEPOffers', 'Get-ZEPOfferItems', 'Search-ZEPOffers', 'ConvertFrom-ZEPDateTime', 'ConvertTo-ZEPTypedOffer', 'Get-ZEPRecentOffers', 'Get-ZEPOffersByStatus', 'Get-ZEPOffersById', 'Get-ZEPEmployee', 'Get-ZEPCustomerContact', 'Get-ZEPOfferCategories', 'Get-ZEPProject', 'Invoke-ZEPSoap', 'Get-ZEPOfferDocuments')
 foreach ($commandName in $commands) {
     if (-not (Get-Command -Name $commandName -ErrorAction SilentlyContinue)) {
         throw "Command '$commandName' was not exported from the module."
@@ -60,7 +60,7 @@ finally {
 }
 
 $manifest = Test-ModuleManifest -Path (Join-Path $PSScriptRoot '..\InvokeZEP.psd1')
-if ($manifest.Version.ToString() -ne '0.6.1') {
+if ($manifest.Version.ToString() -ne '0.7.0') {
     throw "Unexpected module version $($manifest.Version)."
 }
 
@@ -288,6 +288,74 @@ if ($zepProject.name -ne '26B0001' -or (& (Get-Module InvokeZEP) { $script:Proje
 }
 if ($null -ne (Get-ZEPProject -Id 9999)) {
     throw 'Get-ZEPProject sollte fuer unbekannte Projekte $null liefern.'
+}
+
+Remove-Module InvokeZEP -Force
+Import-Module $modulePath -Force
+
+# --- Get-ZEPOfferDocuments: SOAP request with token, parsing, Berlin time -> UTC, SOAP fault -> error
+& (Get-Module InvokeZEP) {
+    function script:Get-ZEPSoapToken { return 'soap-test-token' }
+    $script:SoapSleptSeconds = 0
+    $script:SoapCalls429 = 0
+    function script:Start-Sleep { param ([int]$Seconds, [int]$Milliseconds) if ($Seconds) { $script:SoapSleptSeconds += $Seconds } }
+    function script:Invoke-WebRequest {
+        param ([uri]$Uri, [string]$Method, $Body, [string]$ContentType, [switch]$UseBasicParsing, $ErrorAction, [switch]$SkipHttpErrorCheck)
+        $text = [System.Text.Encoding]::UTF8.GetString([byte[]]$Body)
+        $script:SoapRequest = $text
+        if ($text -match '<angebotId>12347</angebotId>') {
+            return [pscustomobject]@{ StatusCode = 200; Content = '<?xml version="1.0"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://zep.provantis.de"><SOAP-ENV:Body><ns1:ReadDokumenteResponse><responseHeader><version>10</version><returnCode>1005</returnCode><message>Missing or invalid SOAP authorization token</message></responseHeader></ns1:ReadDokumenteResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>' }
+        }
+        if ($text -match '<angebotId>12348</angebotId>' -and $script:SoapCalls429 -eq 0) {
+            $script:SoapCalls429++
+            if ($SkipHttpErrorCheck) {
+                return [pscustomobject]@{ StatusCode = 429; Headers = @{ 'Retry-After' = @('7') }; Content = '' }
+            }
+            $ex = [System.Exception]::new('Too Many Requests')
+            Add-Member -InputObject $ex -MemberType NoteProperty -Name Response -Value ([pscustomobject]@{ StatusCode = 429; Headers = @{ 'Retry-After' = '7' } }) -Force
+            throw $ex
+        }
+        if ($text -match '<angebotId>99999</angebotId>') {
+            return [pscustomobject]@{ StatusCode = 500; Content = '<?xml version="1.0"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>1000</faultcode><faultstring>ZEP-SOAP Authentication Failed</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>' }
+        }
+        if ($text -match '<angebotId>12346</angebotId>') {
+            return [pscustomobject]@{ Content = '<?xml version="1.0"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://zep.provantis.de"><SOAP-ENV:Body><ns1:ReadDokumenteResponse><responseHeader><returnCode>0</returnCode></responseHeader></ns1:ReadDokumenteResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>' }
+        }
+        return [pscustomobject]@{ Content = '<?xml version="1.0"?><SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="http://zep.provantis.de"><SOAP-ENV:Body><ns1:ReadDokumenteResponse><responseHeader><returnCode>0</returnCode></responseHeader><dokumentListe><dokument><id>51862</id><bezeichnung>12345</bezeichnung><dateiname>123451794440557.pdf</dateiname><groesseInByte>34884</groesseInByte><version>2</version><hochgeladenAm>2026-11-12 00:42:37</hochgeladenAm><erstellerUserId>m.mustermann</erstellerUserId><angebotId>12345</angebotId></dokument></dokumentListe></ns1:ReadDokumenteResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>' }
+    }
+}
+
+$offerDocuments = @(Get-ZEPOfferDocuments -OfferId 12345)
+if ($offerDocuments.Count -ne 1 -or $offerDocuments[0].Version -ne 2 -or $offerDocuments[0].OfferId -ne 12345 -or $offerDocuments[0].Creator -ne 'm.mustermann') {
+    throw 'Get-ZEPOfferDocuments liest die Dokumente nicht richtig.'
+}
+if ($offerDocuments[0].UploadedAt.ToString('yyyy-MM-ddTHH:mm:ss') -ne '2026-11-11T23:42:37' -or $offerDocuments[0].UploadedAt.Kind -ne [DateTimeKind]::Utc) {
+    throw "Get-ZEPOfferDocuments rechnet hochgeladenAm nicht von Berliner Zeit nach UTC um: $($offerDocuments[0].UploadedAt.ToString('o'))"
+}
+if ((& (Get-Module InvokeZEP) { $script:SoapRequest }) -notmatch '<authorizationToken>soap-test-token</authorizationToken>') {
+    throw 'Invoke-ZEPSoap sendet das SOAP-Token nicht im requestHeader.'
+}
+if (@(Get-ZEPOfferDocuments -OfferId 12346).Count -ne 0) {
+    throw 'Get-ZEPOfferDocuments sollte ohne Dokumente eine leere Liste liefern.'
+}
+$soapFault = $null
+try { $null = Get-ZEPOfferDocuments -OfferId 99999 } catch { $soapFault = $_.Exception.Message }
+if ($soapFault -notmatch 'Authentication Failed') {
+    throw 'Invoke-ZEPSoap meldet SOAP-Fehler nicht als Fehler.'
+}
+$returnCodeError = $null
+try { $null = Get-ZEPOfferDocuments -OfferId 12347 } catch { $returnCodeError = $_.Exception.Message }
+if ($returnCodeError -notmatch 'returnCode 1005') {
+    throw "Invoke-ZEPSoap meldet einen returnCode <> 0 nicht als Fehler: $returnCodeError"
+}
+$afterThrottle = @(Get-ZEPOfferDocuments -OfferId 12348)
+if ($afterThrottle.Count -ne 1 -or (& (Get-Module InvokeZEP) { $script:SoapSleptSeconds }) -ne 7) {
+    throw "Invoke-ZEPSoap wartet bei HTTP 429 nicht die Retry-After-Zeit ab (geschlafen: $(& (Get-Module InvokeZEP) { $script:SoapSleptSeconds }) s)."
+}
+$zeroRejected = $false
+try { $null = Get-ZEPOfferDocuments -OfferId 0 } catch { $zeroRejected = $true }
+if (-not $zeroRejected) {
+    throw 'Get-ZEPOfferDocuments muss OfferId 0 ablehnen (ZEP liefert sonst alle Dokumente).'
 }
 
 Remove-Module InvokeZEP -Force
